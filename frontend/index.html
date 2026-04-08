@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Realtime Chat</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div id="loginOverlay" class="overlay">
+      <div class="overlay-card">
+        <h1 class="overlay-title">Welcome</h1>
+        <p class="overlay-subtitle">Enter a username and the invite key.</p>
+        <div class="overlay-form">
+          <input id="usernameInput" class="input" type="text" placeholder="Username" maxlength="24" />
+          <input id="chatKeyInput" class="input" type="password" placeholder="Invite key" />
+          <button id="joinBtn" class="btn primary">Join chat</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">Realtime Chat</div>
+        <div class="me">
+          <span id="meLabel" class="me-label"></span>
+          <button id="changeUserBtn" class="btn ghost small" type="button">Change</button>
+        </div>
+      </header>
+
+      <main class="chat">
+        <div id="messages" class="messages" aria-live="polite"></div>
+      </main>
+
+      <footer class="composer">
+        <input id="messageInput" class="input grow" type="text" placeholder="Message..." autocomplete="off" />
+        <input id="fileInput" type="file" hidden />
+        <button id="attachBtn" class="btn ghost" type="button">Attach</button>
+        <button id="sendBtn" class="btn primary" type="button">Send</button>
+      </footer>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+    <script src="/script.js"></script>
+  </body>
+</html>
