@@ -154,4 +154,5 @@ def on_send_message(data):
 
 
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+    # Disable debug/reloader to avoid unexpected restarts when run publicly.
+    socketio.run(app, host="0.0.0.0", port=5000, debug=False, use_reloader=False)
