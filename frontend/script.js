@@ -15,6 +15,11 @@ let socket = null;
 let username = sessionStorage.getItem("username") || "";
 let chatKey = sessionStorage.getItem("chatKey") || "";
 
+function setControlsEnabled(enabled) {
+  sendBtn.disabled = !enabled;
+  attachBtn.disabled = !enabled;
+}
+
 function formatTime(iso) {
   try {
     const d = new Date(iso);
@@ -115,6 +120,7 @@ function showLogin(show) {
 
 function connectSocket() {
   if (socket) return;
+  setControlsEnabled(false);
   socket = io({
     transports: ["websocket", "polling"],
     auth: { key: chatKey },
@@ -129,9 +135,19 @@ function connectSocket() {
     appendMessage(msg);
   });
 
+  socket.on("connect", () => {
+    setControlsEnabled(true);
+  });
+
   socket.on("connect_error", (err) => {
     showLogin(true);
-    alert(err && err.message ? err.message : "Connection rejected. Check invite key.");
+    const m = err && err.message ? err.message : "";
+    alert(m ? m : "Connection rejected. Check invite key. (This chat may be locked to one active session.)");
+    setControlsEnabled(false);
+    if (socket) {
+      socket.disconnect();
+      socket = null;
+    }
   });
 }
 
@@ -160,6 +176,10 @@ function detectType(file) {
 }
 
 async function sendTextMessage() {
+  if (!socket || !socket.connected) {
+    alert("Not connected. Check your invite key and click Join chat again.");
+    return;
+  }
   const text = messageInput.value.trim();
   if (!text) return;
   socket.emit("send_message", {
@@ -174,6 +194,10 @@ async function sendTextMessage() {
 }
 
 async function sendFileMessage(file) {
+  if (!socket || !socket.connected) {
+    alert("Not connected. Check your invite key and click Join chat again.");
+    return;
+  }
   sendBtn.disabled = true;
   attachBtn.disabled = true;
   try {
@@ -199,6 +223,7 @@ joinBtn.addEventListener("click", () => {
   sessionStorage.setItem("chatKey", chatKey);
   showLogin(false);
   connectSocket();
+  setControlsEnabled(false);
 });
 
 usernameInput.addEventListener("keydown", (e) => {
@@ -249,8 +274,10 @@ if (username && chatKey) {
   chatKeyInput.value = chatKey;
   showLogin(false);
   connectSocket();
+  // Will be enabled by socket "connect"
 } else {
   if (username) usernameInput.value = username;
   showLogin(true);
+  setControlsEnabled(false);
 }
 

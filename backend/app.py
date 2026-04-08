@@ -15,10 +15,14 @@ FRONTEND_DIR = (BASE_DIR / ".." / "frontend").resolve()
 UPLOAD_DIR = (BASE_DIR / "uploads").resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# Security (simple 2-person shared secret)
+# Security (simple shared secret + single active session)
 # Set CHAT_KEY to a long random string (recommended for any public URL).
 CHAT_KEY = os.environ.get("CHAT_KEY", "").strip()
-LIMIT_TWO = os.environ.get("LIMIT_TWO", "1").strip().lower() not in ("0", "false", "no", "off")
+# How many concurrent connected clients are allowed.
+# For your requirement ("only one login can be made"), keep this at 1.
+MAX_ACTIVE_CONNECTIONS = int(os.environ.get("MAX_ACTIVE_CONNECTIONS", "1").strip() or "1")
+if MAX_ACTIVE_CONNECTIONS < 1:
+    MAX_ACTIVE_CONNECTIONS = 1
 ACTIVE_SIDS: set[str] = set()
 
 
@@ -113,7 +117,7 @@ def on_connect(auth=None):
     if not _authorized(key):
         return False
 
-    if LIMIT_TWO and len(ACTIVE_SIDS) >= 2:
+    if len(ACTIVE_SIDS) >= MAX_ACTIVE_CONNECTIONS:
         return False
 
     ACTIVE_SIDS.add(request.sid)
