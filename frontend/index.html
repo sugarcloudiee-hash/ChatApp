@@ -9,19 +9,63 @@
   <body>
     <div id="loginOverlay" class="overlay">
       <div class="overlay-card">
-        <h1 class="overlay-title">Welcome</h1>
-        <p class="overlay-subtitle">Enter a username and the invite key (one active session at a time).</p>
-        <div class="overlay-form">
-          <input id="usernameInput" class="input" type="text" placeholder="Username" maxlength="24" />
-          <input id="chatKeyInput" class="input" type="password" placeholder="Invite key" />
-          <button id="joinBtn" class="btn primary">Join chat</button>
+        <!-- Initial Choice Screen -->
+        <div id="choiceScreen" style="display: flex; flex-direction: column; gap: 16px;">
+          <h1 class="overlay-title">Realtime Chat</h1>
+          <p class="overlay-subtitle">Create a new room or join an existing one</p>
+          <button id="createRoomBtn" class="btn primary" type="button" style="width: 100%;">Create Room</button>
+          <button id="joinRoomBtn" class="btn primary" type="button" style="width: 100%;">Join Room</button>
+        </div>
+
+        <!-- Create Room Screen -->
+        <div id="createScreen" style="display: none;">
+          <h1 class="overlay-title">Create Room</h1>
+          <p class="overlay-subtitle">Set up your new chat room</p>
+          <div class="overlay-form">
+            <input id="createUsername" class="input" type="text" placeholder="Your username" maxlength="24" />
+            <input id="createDisplayName" class="input" type="text" placeholder="Display name (optional)" maxlength="32" />
+          </div>
+          <div class="overlay-form">
+            <input id="createRoomKey" class="input" type="text" placeholder="Room key" />
+            <button id="generateKeyBtn" class="btn ghost small" type="button">Generate</button>
+          </div>
+          <div class="overlay-form">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: rgba(255, 255, 255, 0.87);">
+              <span>Max members in room:</span>
+              <input id="maxMembersInput" class="input" type="number" min="1" max="100" value="10" style="width: 80px; text-align: center;" />
+            </label>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button id="createCancelBtn" class="btn ghost" type="button" style="flex: 1;">Back</button>
+            <button id="createSubmitBtn" class="btn primary" type="button" style="flex: 1;">Create &amp; Join</button>
+          </div>
+        </div>
+
+        <!-- Join Room Screen -->
+        <div id="joinScreen" style="display: none;">
+          <h1 class="overlay-title">Join Room</h1>
+          <p class="overlay-subtitle">Enter your details and room invite key</p>
+          <div class="overlay-form">
+            <input id="joinUsername" class="input" type="text" placeholder="Your username" maxlength="24" />
+            <input id="joinDisplayName" class="input" type="text" placeholder="Display name (optional)" maxlength="32" />
+          </div>
+          <div class="overlay-form">
+            <input id="joinRoomKey" class="input" type="text" placeholder="Room invite key" />
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button id="joinCancelBtn" class="btn ghost" type="button" style="flex: 1;">Back</button>
+            <button id="joinSubmitBtn" class="btn primary" type="button" style="flex: 1;">Join Room</button>
+          </div>
         </div>
       </div>
     </div>
 
     <div class="app">
       <header class="topbar">
-        <div class="brand">Realtime Chat</div>
+        <div>
+          <div class="brand">Realtime Chat</div>
+          <div id="roomKeyLabel" class="room-key"></div>
+        </div>
         <div class="me">
           <span id="meLabel" class="me-label"></span>
           <button id="changeUserBtn" class="btn ghost small" type="button">Change</button>
@@ -29,13 +73,17 @@
       </header>
 
       <main class="chat">
+        <div class="chat-meta">
+          <div id="presence" class="presence"></div>
+          <div id="typingIndicator" class="typing-indicator"></div>
+        </div>
         <div id="messages" class="messages" aria-live="polite"></div>
       </main>
 
       <footer class="composer">
-        <input id="messageInput" class="input grow" type="text" placeholder="Message..." autocomplete="off" />
-        <input id="fileInput" type="file" hidden />
         <button id="attachBtn" class="btn ghost" type="button">Attach</button>
+        <input id="fileInput" type="file" hidden />
+        <input id="messageInput" class="input grow" type="text" placeholder="Message..." autocomplete="off" />
         <button id="sendBtn" class="btn primary" type="button">Send</button>
       </footer>
     </div>
