@@ -35,6 +35,9 @@ const joinCancelBtn = document.getElementById("joinCancelBtn");
 const joinSubmitBtn = document.getElementById("joinSubmitBtn");
 
 const REACTION_EMOJIS = ["❤️", "👍", "😂", "🎉", "😮"];
+// Use your backend Flask server URL here.
+// If you deploy the frontend separately, this should point to the backend service URL.
+const BACKEND_BASE_URL = window.BACKEND_BASE_URL || "https://brokers-complex-designing-architecture.trycloudflare.com";
 let socket = null;
 let username = sessionStorage.getItem("username") || "";
 let displayName = sessionStorage.getItem("displayName") || "";
@@ -222,7 +225,7 @@ function setIdentity(name, display, room) {
 }
 
 async function createSession() {
-  const res = await fetch("/session", {
+  const res = await fetch(`${BACKEND_BASE_URL}/session`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({ username, display_name: displayName }),
@@ -513,7 +516,7 @@ function updateMessage(msg) {
 function connectSocket() {
   if (socket) return;
   setControlsEnabled(false);
-  socket = io({
+  socket = io(BACKEND_BASE_URL, {
     transports: ["polling"],
     auth: {
       session_token: sessionToken,
@@ -647,7 +650,7 @@ function connectSocket() {
 async function uploadFile(file) {
   const fd = new FormData();
   fd.append("file", file);
-  const res = await fetch(`/upload?room_key=${encodeURIComponent(roomKey)}`, {
+  const res = await fetch(`${BACKEND_BASE_URL}/upload?room_key=${encodeURIComponent(roomKey)}`, {
     method: "POST",
     body: fd,
     headers: {
