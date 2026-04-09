@@ -1,0 +1,20 @@
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# SQLite database
+backend/data.db
+
+# Uploaded files should not be stored in git
+backend/uploads/
+
+# OS files
+.DS_Store
+Thumbs.db
