@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: chat-backend
+    env: python
+    plan: starter
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: python backend/app.py
+    autoDeploy: true
