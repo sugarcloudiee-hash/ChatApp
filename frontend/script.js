@@ -38,7 +38,7 @@ const REACTION_EMOJIS = ["❤️", "👍", "😂", "🎉", "😮"];
 // Use your backend Flask server URL here.
 // If you deploy the frontend separately, this should point to the backend service URL.
 // Replace the default URL below with your Render service URL if different.
-const BACKEND_BASE_URL = window.BACKEND_BASE_URL || "https://chatapp-526z.onrender.com";
+const BACKEND_BASE_URL = window.BACKEND_BASE_URL || "https://chatapp-1-ctza.onrender.com";
 let socket = null;
 let username = sessionStorage.getItem("username") || "";
 let displayName = sessionStorage.getItem("displayName") || "";
