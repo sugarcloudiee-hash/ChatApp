@@ -4,13 +4,16 @@ import secrets
 import socket
 import uuid
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, g, jsonify, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, disconnect, emit, join_room
+from dotenv import load_dotenv
 from itsdangerous import BadData, URLSafeTimedSerializer
+from supabase import create_client
 from werkzeug.utils import secure_filename
 
 # Configure logging
@@ -32,11 +35,23 @@ FRONTEND_DIR = (BASE_DIR / ".." / "frontend").resolve()
 UPLOAD_DIR = (BASE_DIR / "uploads").resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+# Load backend-local environment variables regardless of current working directory.
+load_dotenv(BASE_DIR / ".env")
+
 APP_SECRET = os.environ.get("CHAT_KEY", "").strip() or secrets.token_urlsafe(32)
 DEBUG_MODE = os.environ.get("FLASK_DEBUG") == "1" or os.environ.get("DEBUG") == "1"
 
 DB_PATH = BASE_DIR / "data.db"
 DATABASE_URI = f"sqlite:///{DB_PATH}"
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+
+if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be configured")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 ALLOWED_MIME_TYPES = {
     "image/png",
@@ -146,6 +161,7 @@ SID_USERNAME: dict[str, str] = {}  # sid -> username
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(64), unique=True, nullable=False)
+    email = db.Column(db.String(128), unique=True, nullable=False)
     display_name = db.Column(db.String(128), nullable=False)
     avatar = db.Column(db.String(32), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -154,6 +170,7 @@ class User(db.Model):
     def to_dict(self):
         return {
             "username": self.username,
+            "email": self.email,
             "display_name": self.display_name,
             "avatar": self.avatar,
         }
@@ -236,8 +253,91 @@ def _extract_room_key() -> str:
     return (request.headers.get("X-Room-Key") or request.args.get("room_key") or "").strip()
 
 
-def _extract_session_token() -> str:
-    return (request.headers.get("X-Session-Token") or request.args.get("session_token") or "").strip()
+def _extract_access_token() -> str:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return (request.args.get("access_token") or "").strip()
+
+
+def _verify_supabase_token(token: str) -> dict:
+    if not token:
+        raise ValueError("Missing Supabase auth token")
+
+    try:
+        if hasattr(supabase.auth, "get_user"):
+            user_response = supabase.auth.get_user(token)
+        else:
+            user_response = supabase.auth.api.get_user(token)
+    except Exception as exc:
+        raise ValueError(f"Invalid Supabase auth token: {exc}") from exc
+
+    if isinstance(user_response, dict):
+        user = user_response.get("user") or user_response.get("data")
+        error = user_response.get("error")
+    else:
+        user = getattr(user_response, "user", None) or getattr(user_response, "data", None) or user_response
+        error = getattr(user_response, "error", None)
+
+    if hasattr(user, "model_dump"):
+        user = user.model_dump()
+    elif not isinstance(user, dict) and hasattr(user, "__dict__"):
+        user = dict(user.__dict__)
+
+    if error:
+        raise ValueError(f"Invalid Supabase auth token: {error}")
+    if not user or not user.get("email"):
+        raise ValueError("Invalid Supabase user")
+    return user
+
+
+def _get_user_from_supabase(token: str):
+    user_data = _verify_supabase_token(token)
+    email = str(user_data.get("email") or "").strip().lower()
+    if not email:
+        raise ValueError("Supabase auth user missing email")
+
+    metadata = user_data.get("user_metadata") or {}
+    display_name = str(metadata.get("full_name") or metadata.get("name") or email.split("@")[0]).strip()
+    avatar = "".join([part[0] for part in display_name.split()[:2]]).upper() or email[:2].upper()
+
+    user = User.query.filter_by(email=email).first()
+    if user:
+        if user.display_name != display_name or user.avatar != avatar:
+            user.display_name = display_name
+            user.avatar = avatar
+            db.session.commit()
+        return user
+
+    user = User(username=email, email=email, display_name=display_name, avatar=avatar)
+    db.session.add(user)
+    db.session.commit()
+    return user
+
+
+def _current_user(token: str | None = None):
+    if getattr(g, "current_user", None):
+        return g.current_user
+
+    if token is None:
+        token = _extract_access_token()
+
+    user = _get_user_from_supabase(token)
+    g.current_user = user
+    return user
+
+
+@app.before_request
+def require_auth():
+    public_paths = {"/", "/style.css", "/script.js"}
+    if request.method == "OPTIONS" or request.path in public_paths or request.path.startswith("/download") or request.path.startswith("/socket.io"):
+        return None
+
+    try:
+        _current_user()
+    except Exception as exc:
+        logger.warning(f"Unauthorized request: {str(exc)}")
+        return jsonify({"error": "Unauthorized"}), 401
 
 
 # Global error handlers
@@ -312,6 +412,12 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
+@app.get("/me")
+def me():
+    user = _current_user()
+    return jsonify({"user": user.to_dict()})
+
+
 @app.get("/style.css")
 def style():
     return send_from_directory(app.static_folder, "style.css")
@@ -324,24 +430,14 @@ def script():
 
 @app.post("/session")
 def create_session():
-    data = request.get_json(silent=True) or {}
-    username = str(data.get("username") or "").strip()
-    display_name = str(data.get("display_name") or username).strip() or username
-    if not username:
-        return jsonify({"error": "Missing username"}), 400
-
-    avatar = "".join([part[0] for part in display_name.split()[:2]]).upper() or username[:2].upper()
-    user = _get_or_create_user(username, display_name, avatar)
-    session = _create_session(user)
-
-    return jsonify({"token": session.token, "user": user.to_dict()}), 201
+    user = _current_user()
+    return jsonify({"user": user.to_dict()}), 200
 
 
 @app.post("/upload")
 def upload():
-    session_token = _extract_session_token()
-    session = _get_session(session_token)
-    if not session or not session.is_valid():
+    user = _current_user()
+    if not user:
         return jsonify({"error": "Unauthorized"}), 401
 
     room_key = _extract_room_key()
@@ -393,25 +489,23 @@ def on_connect(auth=None):
         if not isinstance(auth, dict):
             auth = {}
 
-        session_token = str(auth.get("session_token") or request.args.get("session_token") or "").strip()
         room_key = str(auth.get("room_key") or request.args.get("room_key") or "").strip()
-        logger.debug(f"Session token: {session_token[:20] if session_token else 'EMPTY'}..., Room key: {room_key}")
-        
-        session = _get_session(session_token)
-        logger.debug(f"Session lookup result: {session is not None}, Valid: {session.is_valid() if session else False}")
+        token = str(auth.get("access_token") or request.args.get("access_token") or "").strip()
+        logger.debug(f"Room key: {room_key}")
 
-        if not session or not session.is_valid() or not room_key:
-            logger.warning(f"=== Connection REJECTED ===")
-            logger.warning(f"  Session valid: {session and session.is_valid()}")
-            logger.warning(f"  Room key present: {bool(room_key)}")
+        user = _current_user(token if token else None)
+        username = user.username
+        display_name = user.display_name
+        avatar = user.avatar
+
+        if not room_key:
+            logger.warning("=== Connection REJECTED ===")
+            logger.warning("  Room key present: False")
             return False
-        
-        logger.info(f"=== Connection ACCEPTED ===")
-        logger.info(f"  Username: {session.user.username}")
+
+        logger.info("=== Connection ACCEPTED ===")
+        logger.info(f"  Username: {username}")
         logger.info(f"  Room: {room_key}")
-        username = session.user.username
-        display_name = session.user.display_name
-        avatar = session.user.avatar
     except Exception as e:
         logger.error(f"Exception in on_connect: {str(e)}", exc_info=True)
         return False

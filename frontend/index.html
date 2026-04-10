@@ -7,54 +7,64 @@
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <div id="loginOverlay" class="overlay">
+    <div id="loginOverlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="overlayTitle" aria-describedby="overlayDescription">
       <div class="overlay-card">
-        <!-- Initial Choice Screen -->
-        <div id="choiceScreen" style="display: flex; flex-direction: column; gap: 16px;">
-          <h1 class="overlay-title">Realtime Chat</h1>
-          <p class="overlay-subtitle">Create a new room or join an existing one</p>
-          <button id="createRoomBtn" class="btn primary" type="button" style="width: 100%;">Create Room</button>
-          <button id="joinRoomBtn" class="btn primary" type="button" style="width: 100%;">Join Room</button>
-        </div>
-
-        <!-- Create Room Screen -->
-        <div id="createScreen" style="display: none;">
-          <h1 class="overlay-title">Create Room</h1>
-          <p class="overlay-subtitle">Set up your new chat room</p>
-          <div class="overlay-form">
-            <input id="createUsername" class="input" type="text" placeholder="Your username" maxlength="24" />
-            <input id="createDisplayName" class="input" type="text" placeholder="Display name (optional)" maxlength="32" />
+        <div class="overlay-header">
+          <div>
+            <h1 id="overlayTitle" class="overlay-title">Realtime Chat</h1>
+            <p id="overlayDescription" class="overlay-subtitle">Create a room or join one with your invite key.</p>
           </div>
-          <div class="overlay-form">
-            <input id="createRoomKey" class="input" type="text" placeholder="Room key" />
-            <button id="generateKeyBtn" class="btn ghost small" type="button">Generate</button>
-          </div>
-          <div class="overlay-form">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: rgba(255, 255, 255, 0.87);">
-              <span>Max members in room:</span>
-              <input id="maxMembersInput" class="input" type="number" min="1" max="100" value="10" style="width: 80px; text-align: center;" />
-            </label>
-          </div>
-          <div style="display: flex; gap: 10px;">
-            <button id="createCancelBtn" class="btn ghost" type="button" style="flex: 1;">Back</button>
-            <button id="createSubmitBtn" class="btn primary" type="button" style="flex: 1;">Create &amp; Join</button>
+          <div class="overlay-tabs" role="tablist" aria-label="Room setup tabs">
+            <button id="tabCreate" class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="createScreen">Create</button>
+            <button id="tabJoin" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="joinScreen">Join</button>
           </div>
         </div>
 
-        <!-- Join Room Screen -->
-        <div id="joinScreen" style="display: none;">
-          <h1 class="overlay-title">Join Room</h1>
-          <p class="overlay-subtitle">Enter your details and room invite key</p>
+        <div class="overlay-form">
+          <label for="authEmail">Email</label>
+          <input id="authEmail" class="input" type="email" placeholder="you@example.com" autocomplete="email" />
+          <span id="authEmailError" class="field-error"></span>
+        </div>
+        <div class="overlay-form">
+          <label for="authPassword">Password</label>
+          <input id="authPassword" class="input" type="password" placeholder="Password" autocomplete="current-password" />
+          <span id="authPasswordError" class="field-error"></span>
+        </div>
+
+        <div id="createScreen" class="overlay-panel">
           <div class="overlay-form">
-            <input id="joinUsername" class="input" type="text" placeholder="Your username" maxlength="24" />
-            <input id="joinDisplayName" class="input" type="text" placeholder="Display name (optional)" maxlength="32" />
+            <p class="field-note">Sign in with Supabase Auth before creating the room.</p>
+          </div>
+          <div class="overlay-form row-gap">
+            <label for="createRoomKey">Room key</label>
+            <div class="field-with-button">
+              <input id="createRoomKey" class="input" type="text" placeholder="Room key" />
+              <button id="generateKeyBtn" class="btn ghost small" type="button">Generate</button>
+            </div>
+            <span class="field-note">Share this key with your friends. Generated keys are safe to reuse.</span>
+            <span id="createRoomKeyError" class="field-error"></span>
           </div>
           <div class="overlay-form">
+            <label for="maxMembersInput">Max members in room</label>
+            <input id="maxMembersInput" class="input" type="number" min="1" max="100" value="10" />
+          </div>
+          <div class="overlay-actions">
+            <button id="createSubmitBtn" class="btn primary" type="button">Create &amp; Join</button>
+          </div>
+        </div>
+
+        <div id="joinScreen" class="overlay-panel hidden">
+          <div class="overlay-form">
+            <p class="field-note">Sign in with Supabase Auth before joining the room.</p>
+          </div>
+          <div class="overlay-form row-gap">
+            <label for="joinRoomKey">Room invite key</label>
             <input id="joinRoomKey" class="input" type="text" placeholder="Room invite key" />
+            <span class="field-note">Enter the room invite key shared by the host.</span>
+            <span id="joinRoomKeyError" class="field-error"></span>
           </div>
-          <div style="display: flex; gap: 10px;">
-            <button id="joinCancelBtn" class="btn ghost" type="button" style="flex: 1;">Back</button>
-            <button id="joinSubmitBtn" class="btn primary" type="button" style="flex: 1;">Join Room</button>
+          <div class="overlay-actions">
+            <button id="joinSubmitBtn" class="btn primary" type="button">Join Room</button>
           </div>
         </div>
       </div>
@@ -62,12 +72,18 @@
 
     <div class="app">
       <header class="topbar">
-        <div>
+        <div class="topbar-left">
           <div class="brand">Realtime Chat</div>
-          <div id="roomKeyLabel" class="room-key"></div>
+          <div class="room-meta">
+            <span id="roomKeyLabel" class="room-key"></span>
+            <button id="copyInviteBtn" class="btn ghost small" type="button" aria-label="Copy room invite key">Copy invite</button>
+          </div>
+          <div id="connectionStatus" class="connection-status" role="status" aria-live="polite" aria-atomic="true">Disconnected</div>
         </div>
         <div class="me">
           <span id="meLabel" class="me-label"></span>
+          <span id="hostBadge" class="status-badge hidden">Host</span>
+          <span id="memberBadge" class="status-badge hidden"></span>
           <button id="changeUserBtn" class="btn ghost small" type="button">Change</button>
         </div>
       </header>
@@ -75,19 +91,39 @@
       <main class="chat">
         <div class="chat-meta">
           <div id="presence" class="presence"></div>
-          <div id="typingIndicator" class="typing-indicator"></div>
+          <div id="typingIndicator" class="typing-indicator" role="status" aria-live="polite" aria-atomic="true"></div>
         </div>
         <div id="messages" class="messages" aria-live="polite"></div>
       </main>
 
+      <div id="filePreview" class="file-preview hidden"></div>
+
       <footer class="composer">
-        <button id="attachBtn" class="btn ghost" type="button">Attach</button>
-        <input id="fileInput" type="file" hidden />
-        <input id="messageInput" class="input grow" type="text" placeholder="Message..." autocomplete="off" />
-        <button id="sendBtn" class="btn primary" type="button">Send</button>
+        <button id="attachBtn" class="btn ghost" type="button" aria-label="Attach a file">Attach</button>
+        <input id="fileInput" type="file" accept="image/png,image/jpeg,image/jpg,image/gif,video/mp4,video/webm,video/ogg,.pdf,.txt" hidden />
+        <input id="messageInput" class="input grow" type="text" placeholder="Message..." autocomplete="off" aria-label="Message input" />
+        <button id="sendBtn" class="btn primary" type="button" aria-label="Send message">Send</button>
+        <span class="file-hint">Allowed: PNG, JPG, GIF, MP4, PDF, TXT. Max 50MB.</span>
       </footer>
     </div>
 
+    <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+    <div id="pendingModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="pendingModalTitle">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <h2 id="pendingModalTitle">Pending Join Requests</h2>
+            <p class="modal-subtitle">Approve or reject guests before they join your room.</p>
+          </div>
+          <button id="pendingModalClose" type="button" class="modal-close" aria-label="Close pending requests">×</button>
+        </div>
+        <div id="pendingModalContent" class="modal-content"></div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js" crossorigin="anonymous"></script>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
     <script src="/script.js"></script>
   </body>
