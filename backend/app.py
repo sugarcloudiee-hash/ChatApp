@@ -109,6 +109,19 @@ app.config["JSON_SORT_KEYS"] = False
 
 socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*", manage_session=False, ping_timeout=60, ping_interval=25)
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Session-Token,X-Room-Key"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
+
+@app.route("/", defaults={"path": ""}, methods=["OPTIONS"])
+@app.route("/<path:path>", methods=["OPTIONS"])
+def handle_options(path=""):
+    return "", 204
+
 # Log all incoming requests
 @app.before_request
 def log_request_info():
