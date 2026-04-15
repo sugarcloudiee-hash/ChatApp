@@ -9,7 +9,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
-from flask_socketio import SocketIO, disconnect, emit, join_room
+from flask_socketio import SocketIO, disconnect, emit, join_room, leave_room
 from itsdangerous import BadData, URLSafeTimedSerializer
 from werkzeug.utils import secure_filename
 
@@ -141,6 +141,7 @@ ROOM_PENDING: dict[str, set[str]] = {}  # room_key -> {username}  (awaiting appr
 ROOM_TYPING: dict[str, set[str]] = {}
 SID_ROOM: dict[str, str] = {}  # sid -> room_key
 SID_USERNAME: dict[str, str] = {}  # sid -> username
+ROOM_VIDEO: dict[str, dict] = {}  # room_key -> shared watch-party state
 
 
 class User(db.Model):
@@ -305,6 +306,31 @@ def _present_members(room: str) -> list[dict]:
 
 def _find_message(room_key: str, message_id: str):
     return Message.query.filter_by(room_key=room_key, id=message_id).first()
+
+
+def _default_video_state() -> dict:
+    return {
+        "video_url": "",
+        "video_type": "html5",
+        "timestamp": 0.0,
+        "status": "paused",
+    }
+
+
+def _room_video_state(room_key: str) -> dict:
+    return ROOM_VIDEO.setdefault(room_key, _default_video_state().copy())
+
+
+def _is_host_controller(room_key: str, sid: str) -> bool:
+    username = SID_USERNAME.get(sid)
+    return bool(room_key and username and username == ROOM_HOSTS.get(room_key))
+
+
+def _safe_non_negative_float(value, fallback: float = 0.0) -> float:
+    try:
+        return max(float(value), 0.0)
+    except (TypeError, ValueError):
+        return fallback
 
 
 @app.get("/")
@@ -481,6 +507,8 @@ def on_connect(auth=None):
         "max_members": max_members,
         "member_count": len(ROOM_MEMBERS.get(room_key, {}))
     }, room=room_key)
+    emit("video_set", _room_video_state(room_key), to=request.sid)
+    emit("video_sync", _room_video_state(room_key), to=request.sid)
 
 
 @socketio.on("disconnect")
@@ -496,6 +524,7 @@ def on_disconnect():
     if not members:
         ROOM_MEMBERS.pop(room_key, None)
         ROOM_TYPING.pop(room_key, None)
+        ROOM_VIDEO.pop(room_key, None)
 
     emit("presence_update", {"members": _present_members(room_key)}, room=room_key)
     emit("typing_update", {"typing": []}, room=room_key)
@@ -750,6 +779,89 @@ def on_update_room_capacity(data):
         "max_members": max_members,
         "member_count": len(ROOM_MEMBERS.get(room_key, {}))
     }, room=room_key)
+
+
+@socketio.on("video_set")
+def on_video_set(data):
+    room_key = SID_ROOM.get(request.sid)
+    if not room_key or not _is_host_controller(room_key, request.sid):
+        return
+
+    payload = data or {}
+    video_url = str(payload.get("video_url") or "").strip()
+    if not video_url:
+        return
+
+    video_type = str(payload.get("video_type") or "html5").strip().lower()
+    if video_type not in {"youtube", "html5"}:
+        video_type = "html5"
+
+    state = _room_video_state(room_key)
+    state.update(
+        {
+            "video_url": video_url,
+            "video_type": video_type,
+            "timestamp": _safe_non_negative_float(payload.get("timestamp"), 0.0),
+            "status": "paused",
+        }
+    )
+    emit("video_set", state, room=room_key)
+
+
+@socketio.on("video_play")
+def on_video_play(data):
+    room_key = SID_ROOM.get(request.sid)
+    if not room_key or not _is_host_controller(room_key, request.sid):
+        return
+
+    payload = data or {}
+    state = _room_video_state(room_key)
+    state["status"] = "playing"
+    state["timestamp"] = _safe_non_negative_float(payload.get("timestamp"), _safe_non_negative_float(state.get("timestamp"), 0.0))
+    emit("video_play", state, room=room_key)
+
+
+@socketio.on("video_pause")
+def on_video_pause(data):
+    room_key = SID_ROOM.get(request.sid)
+    if not room_key or not _is_host_controller(room_key, request.sid):
+        return
+
+    payload = data or {}
+    state = _room_video_state(room_key)
+    state["status"] = "paused"
+    state["timestamp"] = _safe_non_negative_float(payload.get("timestamp"), _safe_non_negative_float(state.get("timestamp"), 0.0))
+    emit("video_pause", state, room=room_key)
+
+
+@socketio.on("video_seek")
+def on_video_seek(data):
+    room_key = SID_ROOM.get(request.sid)
+    if not room_key or not _is_host_controller(room_key, request.sid):
+        return
+
+    payload = data or {}
+    state = _room_video_state(room_key)
+    state["timestamp"] = _safe_non_negative_float(payload.get("timestamp"), 0.0)
+    emit("video_seek", state, room=room_key)
+
+
+@socketio.on("video_sync")
+def on_video_sync(data):
+    room_key = SID_ROOM.get(request.sid)
+    if not room_key or not _is_host_controller(room_key, request.sid):
+        return
+
+    payload = data or {}
+    state = _room_video_state(room_key)
+    if payload.get("video_url"):
+        state["video_url"] = str(payload.get("video_url")).strip()
+    if payload.get("video_type") in {"youtube", "html5"}:
+        state["video_type"] = payload.get("video_type")
+    state["timestamp"] = _safe_non_negative_float(payload.get("timestamp"), _safe_non_negative_float(state.get("timestamp"), 0.0))
+    status = str(payload.get("status") or state.get("status") or "paused").strip().lower()
+    state["status"] = "playing" if status == "playing" else "paused"
+    emit("video_sync", state, room=room_key)
 
 
 if __name__ == "__main__":
