@@ -1,6 +1,8 @@
 (function () {
   const DRIFT_THRESHOLD_SECONDS = 1;
   const HOST_SYNC_INTERVAL_MS = 5000;
+  const YT_SEEK_POLL_MS = 400;
+  const YT_SEEK_DELTA_THRESHOLD = 1.2;
 
   const elements = {
     urlInput: document.getElementById("watchPartyUrl"),
@@ -17,6 +19,9 @@
   let ytPlayer = null;
   let ytReadyPromise = null;
   let suppressLocalEvents = false;
+  let ytLastKnownTime = 0;
+  let ytLastSampleAt = 0;
+  let ytSeekMonitorTimer = null;
   let currentState = {
     video_url: "",
     video_type: "html5",
@@ -90,6 +95,47 @@
     return ytReadyPromise;
   }
 
+  function startYouTubeSeekMonitor() {
+    stopYouTubeSeekMonitor();
+    ytLastKnownTime = 0;
+    ytLastSampleAt = Date.now();
+    ytSeekMonitorTimer = setInterval(() => {
+      if (
+        !ytPlayer ||
+        suppressLocalEvents ||
+        !isHostFn() ||
+        typeof ytPlayer.getCurrentTime !== "function" ||
+        typeof ytPlayer.getPlayerState !== "function"
+      ) {
+        return;
+      }
+
+      const current = ytPlayer.getCurrentTime() || 0;
+      const now = Date.now();
+      const elapsed = (now - ytLastSampleAt) / 1000;
+      const delta = current - ytLastKnownTime;
+      const playerState = ytPlayer.getPlayerState();
+
+      if (playerState === window.YT?.PlayerState?.PLAYING) {
+        if (Math.abs(delta - elapsed) > YT_SEEK_DELTA_THRESHOLD) {
+          emitPlaybackEvent("seek", current);
+        }
+      } else if (Math.abs(delta) > YT_SEEK_DELTA_THRESHOLD) {
+        emitPlaybackEvent("seek", current);
+      }
+
+      ytLastKnownTime = current;
+      ytLastSampleAt = now;
+    }, YT_SEEK_POLL_MS);
+  }
+
+  function stopYouTubeSeekMonitor() {
+    if (ytSeekMonitorTimer) {
+      clearInterval(ytSeekMonitorTimer);
+      ytSeekMonitorTimer = null;
+    }
+  }
+
   function getLocalTimestamp() {
     if (currentState.video_type === "youtube" && ytPlayer && typeof ytPlayer.getCurrentTime === "function") {
       return ytPlayer.getCurrentTime() || 0;
@@ -103,6 +149,24 @@
   function emitToRoom(eventName, payload) {
     if (!socket || !socket.connected || !isHostFn()) return;
     socket.emit(eventName, payload);
+  }
+
+  function emitPlaybackEvent(kind, timestamp) {
+    const payload = { timestamp: Math.max(0, Number(timestamp || 0)) };
+    if (kind === "play") {
+      emitToRoom("video_play", payload);
+      emitToRoom("play", payload);
+      return;
+    }
+    if (kind === "pause") {
+      emitToRoom("video_pause", payload);
+      emitToRoom("pause", payload);
+      return;
+    }
+    if (kind === "seek") {
+      emitToRoom("video_seek", payload);
+      emitToRoom("seek", payload);
+    }
   }
 
   function startHostSync() {
@@ -155,10 +219,13 @@
   function onYouTubeStateChange(event) {
     if (suppressLocalEvents || !isHostFn()) return;
 
+    ytLastKnownTime = getLocalTimestamp();
+    ytLastSampleAt = Date.now();
+
     if (event.data === window.YT.PlayerState.PLAYING) {
-      emitToRoom("video_play", { timestamp: getLocalTimestamp() });
+      emitPlaybackEvent("play", getLocalTimestamp());
     } else if (event.data === window.YT.PlayerState.PAUSED) {
-      emitToRoom("video_pause", { timestamp: getLocalTimestamp() });
+      emitPlaybackEvent("pause", getLocalTimestamp());
     }
   }
 
@@ -166,17 +233,17 @@
     const video = elements.html5Player;
     video.addEventListener("play", () => {
       if (suppressLocalEvents) return;
-      emitToRoom("video_play", { timestamp: video.currentTime || 0 });
+      emitPlaybackEvent("play", video.currentTime || 0);
     });
 
     video.addEventListener("pause", () => {
       if (suppressLocalEvents) return;
-      emitToRoom("video_pause", { timestamp: video.currentTime || 0 });
+      emitPlaybackEvent("pause", video.currentTime || 0);
     });
 
     video.addEventListener("seeked", () => {
       if (suppressLocalEvents) return;
-      emitToRoom("video_seek", { timestamp: video.currentTime || 0 });
+      emitPlaybackEvent("seek", video.currentTime || 0);
     });
   }
 
@@ -207,11 +274,13 @@
     try {
       if (currentState.video_type === "youtube") {
         showPlayer("youtube");
+        startYouTubeSeekMonitor();
         const videoId = extractYouTubeId(currentState.video_url);
         if (!videoId) return;
         await ensureYouTubePlayer(videoId, currentState.timestamp || 0);
       } else {
         showPlayer("html5");
+        stopYouTubeSeekMonitor();
         const normalized = normalizeHtml5VideoUrl(currentState.video_url);
         if (elements.html5Player.src !== normalized) {
           elements.html5Player.src = normalized;
@@ -297,6 +366,18 @@
     socket.on("video_sync", (state) => {
       applyPlaybackState(state || {});
     });
+
+    socket.on("play", (payload) => {
+      applyPlaybackState({ ...(payload || {}), status: "playing" });
+    });
+
+    socket.on("pause", (payload) => {
+      applyPlaybackState({ ...(payload || {}), status: "paused" });
+    });
+
+    socket.on("seek", (payload) => {
+      applyPlaybackState({ ...(payload || {}), status: currentState.status || "paused" });
+    });
   }
 
   function unbindSocketHandlers() {
@@ -306,6 +387,9 @@
     socket.off("video_pause");
     socket.off("video_seek");
     socket.off("video_sync");
+    socket.off("play");
+    socket.off("pause");
+    socket.off("seek");
   }
 
   function init(options) {
@@ -335,6 +419,7 @@
 
   function reset() {
     stopHostSync();
+    stopYouTubeSeekMonitor();
     currentState = {
       video_url: "",
       video_type: "html5",
