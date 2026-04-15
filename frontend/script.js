@@ -52,6 +52,7 @@ let awaitingApproval = false;
 let pendingRequests = [];  // For host: list of pending join requests
 let roomMaxMembers = 10;  // Current room capacity
 let roomMemberCount = 0;  // Current members in room
+const watchParty = window.WatchParty || null;
 
 function setControlsEnabled(enabled) {
   if (awaitingApproval) {
@@ -527,9 +528,11 @@ function connectSocket() {
     query: { room_key: roomKey },
     upgrade: false,
   });
+  watchParty?.attachSocket(socket);
 
   socket.on("connect", () => {
     setControlsEnabled(true);
+    watchParty?.onRoleUpdated();
   });
 
   socket.on("message_history", (history) => {
@@ -578,6 +581,7 @@ function connectSocket() {
     if (max_members) roomMaxMembers = max_members;
     if (typeof member_count === 'number') roomMemberCount = member_count;
     renderPresence(members);
+    watchParty?.onRoleUpdated();
   });
 
   socket.on("awaiting_approval", ({ message, host }) => {
@@ -645,6 +649,7 @@ function connectSocket() {
     lastMessageDate = "";
     const panel = document.getElementById("pendingRequestsPanel");
     if (panel) panel.remove();
+    watchParty?.reset();
   });
 }
 
@@ -835,6 +840,7 @@ changeUserBtn.addEventListener("click", () => {
     socket.disconnect();
     socket = null;
   }
+  watchParty?.reset();
   showLogin(true);
 });
 
@@ -864,6 +870,9 @@ fileInput.addEventListener("change", async () => {
 
 // Reset date separator tracking
 lastMessageDate = "";
+watchParty?.init({
+  isHost: () => isHost,
+});
 
 if (username && roomKey && sessionToken) {
   // User already has session - restore UI state
@@ -875,4 +884,3 @@ if (username && roomKey && sessionToken) {
   showLogin(true);
   setControlsEnabled(false);
 }
-

@@ -72,6 +72,22 @@
         </div>
       </header>
 
+      <section class="watch-party-panel">
+        <div class="watch-party-controls">
+          <input id="watchPartyUrl" class="input grow" type="text" placeholder="Paste YouTube or direct video URL" />
+          <select id="watchPartyType" class="input" style="min-width: 120px;">
+            <option value="youtube">YouTube</option>
+            <option value="html5">Direct Video</option>
+          </select>
+          <button id="watchPartySetBtn" class="btn primary" type="button">Set Video</button>
+        </div>
+        <div id="watchPartyHostHint" class="watch-party-hint">Only the host can set or control playback.</div>
+        <div class="watch-party-player">
+          <div id="ytPlayerContainer" style="display: none;"></div>
+          <video id="html5Player" controls playsinline style="display: none; width: 100%; max-height: 360px; border-radius: 10px;"></video>
+        </div>
+      </section>
+
       <main class="chat">
         <div class="chat-meta">
           <div id="presence" class="presence"></div>
@@ -89,6 +105,7 @@
     </div>
 
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+    <script src="/watchparty.js"></script>
     <script src="/script.js"></script>
   </body>
 </html>
