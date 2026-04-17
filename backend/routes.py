@@ -20,14 +20,6 @@ def register_routes(app):
         user = _current_user()
         return jsonify({"user": user.to_dict()})
 
-    @app.get("/style.css")
-    def style():
-        return send_from_directory(app.static_folder, "style.css")
-
-    @app.get("/script.js")
-    def script():
-        return send_from_directory(app.static_folder, "script.js")
-
     @app.get("/favicon.ico")
     def favicon():
         return "", 204
@@ -79,3 +71,10 @@ def register_routes(app):
             return jsonify({"error": "Invalid or expired download token"}), 403
 
         return send_from_directory(str(UPLOAD_DIR), filename, as_attachment=True)
+
+    @app.get("/<path:path>")
+    def frontend_assets(path: str):
+        asset_path = Path(app.static_folder) / path
+        if asset_path.exists() and asset_path.is_file():
+            return send_from_directory(app.static_folder, path)
+        return send_from_directory(app.static_folder, "index.html")

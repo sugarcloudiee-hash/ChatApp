@@ -1,0 +1,196 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Realtime Chat</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div id="loginOverlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="overlayTitle" aria-describedby="overlayDescription">
+      <div class="overlay-card">
+        <div class="overlay-header">
+          <div>
+            <h1 id="overlayTitle" class="overlay-title">Realtime Chat</h1>
+            <p id="overlayDescription" class="overlay-subtitle">Sign in first, then create or join a room.</p>
+          </div>
+        </div>
+
+        <section id="authSection" class="overlay-section">
+          <div class="overlay-tabs" role="tablist" aria-label="Authentication tabs">
+            <button id="authTabLogin" class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="authPanel">Login</button>
+            <button id="authTabSignup" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="authPanel">Sign up</button>
+          </div>
+
+          <div id="authPanel" class="overlay-panel">
+            <div class="overlay-form">
+              <label for="authEmail">Email</label>
+              <input id="authEmail" class="input" type="email" placeholder="you@example.com" autocomplete="email" />
+              <span id="authEmailError" class="field-error"></span>
+            </div>
+            <div class="overlay-form">
+              <label for="authPassword">Password</label>
+              <input id="authPassword" class="input" type="password" placeholder="Password" autocomplete="current-password" />
+              <span id="authPasswordError" class="field-error"></span>
+            </div>
+            <div id="confirmPasswordGroup" class="overlay-form hidden">
+              <label for="authConfirmPassword">Confirm password</label>
+              <input id="authConfirmPassword" class="input" type="password" placeholder="Re-enter password" autocomplete="new-password" />
+              <span id="authConfirmPasswordError" class="field-error"></span>
+            </div>
+            <div class="overlay-actions">
+              <button id="authSubmitBtn" class="btn primary" type="button">Continue</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="roomSetupSection" class="overlay-section hidden">
+          <div class="overlay-tabs" role="tablist" aria-label="Room setup tabs">
+            <button id="tabCreate" class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="createScreen">Create Room</button>
+            <button id="tabJoin" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="joinScreen">Join Room</button>
+          </div>
+
+          <div id="createScreen" class="overlay-panel">
+            <div class="overlay-form row-gap">
+              <label for="createRoomKey">Room key</label>
+              <div class="field-with-button">
+                <input id="createRoomKey" class="input" type="text" placeholder="Room key" />
+                <button id="generateKeyBtn" class="btn ghost small" type="button">Generate</button>
+              </div>
+              <span class="field-note">Share this key with your friends. Generated keys are safe to reuse.</span>
+              <span id="createRoomKeyError" class="field-error"></span>
+            </div>
+            <div class="overlay-form">
+              <label for="roomPrivacy">Room privacy</label>
+              <select id="roomPrivacy" class="input">
+                <option value="private" selected>Private (invite only)</option>
+                <option value="public">Public (anyone with room key)</option>
+              </select>
+            </div>
+            <div class="overlay-actions">
+              <button id="createSubmitBtn" class="btn primary" type="button">Create &amp; Join</button>
+            </div>
+          </div>
+
+          <div id="joinScreen" class="overlay-panel hidden">
+            <div class="overlay-form row-gap">
+              <label for="joinRoomKey">Room invite key</label>
+              <input id="joinRoomKey" class="input" type="text" placeholder="Room invite key" />
+              <span class="field-note">Enter the room invite key shared by the host.</span>
+              <span id="joinRoomKeyError" class="field-error"></span>
+            </div>
+            <div class="overlay-form">
+              <label for="joinInviteToken">Invite token (private rooms)</label>
+              <input id="joinInviteToken" class="input" type="text" placeholder="Optional token from invite link" />
+            </div>
+            <div class="overlay-actions">
+              <button id="joinSubmitBtn" class="btn primary" type="button">Join Room</button>
+            </div>
+          </div>
+
+          <p class="overlay-note">Need another account? Use the Change button later to sign out and switch users.</p>
+        </section>
+      </div>
+    </div>
+
+    <div class="app">
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="brand">Realtime Chat</div>
+          <div class="room-meta">
+            <span id="roomKeyLabel" class="room-key"></span>
+            <button id="copyInviteBtn" class="btn ghost small" type="button" aria-label="Copy room invite key">Copy invite</button>
+            <div id="inviteByUsernameWrap" class="invite-inline hidden">
+              <input id="inviteUsernameInput" class="input invite-inline-input" type="text" placeholder="Invite by username/email" />
+              <button id="inviteUsernameBtn" class="btn ghost small" type="button">Invite user</button>
+            </div>
+          </div>
+          <div id="connectionStatus" class="connection-status" role="status" aria-live="polite" aria-atomic="true">Disconnected</div>
+        </div>
+        <div class="me">
+          <span id="meLabel" class="me-label"></span>
+          <span id="hostBadge" class="status-badge hidden">Host</span>
+          <span id="memberBadge" class="status-badge hidden"></span>
+          <button id="changeUserBtn" class="btn ghost small" type="button">Change</button>
+        </div>
+      </header>
+
+      <main class="chat">
+        <div class="chat-meta">
+          <div id="presence" class="presence"></div>
+          <div id="typingIndicator" class="typing-indicator" role="status" aria-live="polite" aria-atomic="true"></div>
+        </div>
+        <section id="syncPlayerPanel" class="sync-player hidden" aria-label="Shared media playback">
+          <div class="sync-player-header">
+            <div>
+              <div class="sync-player-kicker">Synchronized playback</div>
+              <h2 id="syncPlayerTitle" class="sync-player-title">No shared media loaded</h2>
+            </div>
+            <div class="sync-player-status-wrap">
+              <span id="syncPlayerStatus" class="sync-player-status">Idle</span>
+              <span class="sync-player-note">Everyone follows the same playhead.</span>
+            </div>
+          </div>
+          <video id="syncVideo" class="sync-player-video" controls playsinline preload="metadata"></video>
+          <audio id="syncAudio" class="sync-player-audio hidden" controls preload="metadata"></audio>
+          <iframe
+            id="syncEmbed"
+            class="sync-player-embed hidden"
+            title="Shared stream"
+            allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+            allowfullscreen
+            loading="lazy"
+            referrerpolicy="strict-origin-when-cross-origin"
+          ></iframe>
+          <div id="syncExternalCard" class="sync-external-card hidden">
+            <div class="sync-external-title">External stream link</div>
+            <a id="syncExternalLink" class="sync-external-link" href="#" target="_blank" rel="noopener noreferrer">Open stream link</a>
+            <div class="sync-player-note">Use this for providers that do not allow direct embed playback.</div>
+          </div>
+          <div class="sync-player-hint">Supports shared video and music playback from direct files plus Google Drive, Dropbox, Google Photos, and YouTube links.</div>
+        </section>
+        <div id="messages" class="messages" aria-live="polite"></div>
+      </main>
+
+      <div id="filePreview" class="file-preview hidden"></div>
+
+      <footer class="composer">
+        <button id="attachBtn" class="btn ghost" type="button" aria-label="Attach a file">Attach</button>
+        <input id="fileInput" type="file" accept="image/png,image/jpeg,image/jpg,image/gif,video/mp4,video/webm,video/ogg,audio/mpeg,audio/mp3,audio/wav,audio/ogg,audio/webm,audio/aac,audio/mp4,.m4a,.pdf,.txt" hidden />
+        <input id="messageInput" class="input grow" type="text" placeholder="Message..." autocomplete="off" aria-label="Message input" />
+        <button id="sendBtn" class="btn primary" type="button" aria-label="Send message">Send</button>
+        <div class="stream-quickbar" aria-label="Start synchronized stream">
+          <input id="streamUrlInput" class="input stream-url-input" type="url" placeholder="Paste YouTube / Drive / Spotify / media URL" aria-label="Stream URL" />
+          <select id="streamKindSelect" class="input stream-kind-select" aria-label="Stream type">
+            <option value="">Auto</option>
+            <option value="video">Video</option>
+            <option value="audio">Audio</option>
+            <option value="embed">Embed</option>
+          </select>
+          <button id="streamLoadBtn" class="btn ghost" type="button" aria-label="Start synchronized stream">Start stream</button>
+        </div>
+      </footer>
+    </div>
+
+    <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+    <div id="pendingModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="pendingModalTitle">
+      <div class="modal-backdrop"></div>
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <h2 id="pendingModalTitle">Pending Join Requests</h2>
+            <p class="modal-subtitle">Approve or reject guests before they join your room.</p>
+          </div>
+          <button id="pendingModalClose" type="button" class="modal-close" aria-label="Close pending requests">├ù</button>
+        </div>
+        <div id="pendingModalContent" class="modal-content"></div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
+    <script src="/script.js"></script>
+  </body>
+</html>
+

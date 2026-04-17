@@ -11,6 +11,29 @@ from utils import _cleanup_room_if_empty, _find_message, _get_member, _get_room_
 
 
 logger = logging.getLogger(__name__)
+_SYNC_BROADCASTER_STARTED = False
+
+
+def _sync_broadcast_worker():
+    # Periodically rebroadcast playback state to reduce drift between clients.
+    while True:
+        socketio.sleep(2)
+        for room_key in list(ROOM_IDS.keys()):
+            playback_state = _get_room_playback(room_key)
+            if not playback_state:
+                continue
+            room_id = ROOM_IDS.get(room_key)
+            if not room_id:
+                continue
+            socketio.emit("video_sync_state", playback_state, room=room_id)
+
+
+def _ensure_sync_broadcaster_started():
+    global _SYNC_BROADCASTER_STARTED
+    if _SYNC_BROADCASTER_STARTED:
+        return
+    socketio.start_background_task(_sync_broadcast_worker)
+    _SYNC_BROADCASTER_STARTED = True
 
 
 def _emit_room_snapshot(room_key: str, room_id: str | None = None, sid: str | None = None):
@@ -52,6 +75,7 @@ def _join_member(room_key: str, room_id: str, username: str, display_name: str, 
 
 @socketio.on("connect")
 def on_connect(auth=None):
+    _ensure_sync_broadcaster_started()
     request_sid = request.sid
     logger.debug(f"=== Socket.IO CONNECT handler called ===")
     logger.debug(f"Auth data received: {auth}")
@@ -477,6 +501,12 @@ def on_video_sync_load(data):
     if not room_key or not room_id or not username:
         return
 
+    # Keep playback authoritative from a single controller (room host)
+    # so all connected clients follow the same timeline.
+    if username != ROOM_HOSTS.get(room_key):
+        emit("video_sync_denied", {"reason": "Only the host can control synchronized playback."}, to=request.sid)
+        return
+
     member = _get_member(room_key, username)
     if not member:
         return
@@ -504,6 +534,12 @@ def on_video_sync_state(data):
     room_id = SID_ROOM_ID.get(request.sid)
     username = SID_USERNAME.get(request.sid)
     if not room_key or not room_id or not username:
+        return
+
+    # Keep playback authoritative from a single controller (room host)
+    # so all connected clients follow the same timeline.
+    if username != ROOM_HOSTS.get(room_key):
+        emit("video_sync_denied", {"reason": "Only the host can control synchronized playback."}, to=request.sid)
         return
 
     member = _get_member(room_key, username)

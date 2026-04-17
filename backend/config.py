@@ -6,7 +6,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
-FRONTEND_DIR = (BASE_DIR / ".." / "frontend").resolve()
+FRONTEND_SRC_DIR = (BASE_DIR / ".." / "frontend").resolve()
+FRONTEND_DIST_DIR = (FRONTEND_SRC_DIR / "dist").resolve()
+FRONTEND_DIR = FRONTEND_DIST_DIR if FRONTEND_DIST_DIR.exists() else FRONTEND_SRC_DIR
 UPLOAD_DIR = (BASE_DIR / "uploads").resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 

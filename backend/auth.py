@@ -196,8 +196,28 @@ def _current_user(token: str | None = None):
 def register_auth(app):
     @app.before_request
     def require_auth():
-        public_paths = {"/", "/style.css", "/script.js", "/favicon.ico"}
-        if request.method == "OPTIONS" or request.path in public_paths or request.path.startswith("/download") or request.path.startswith("/socket.io"):
+        public_paths = {
+            "/",
+            "/favicon.ico",
+            "/favicon.svg",
+            "/legacy.html",
+            "/index.html",
+            "/style.css",
+            "/script.js",
+        }
+        public_prefixes = (
+            "/assets/",
+            "/download/",
+            "/socket.io",
+        )
+
+        if request.method == "OPTIONS":
+            return None
+
+        if request.path in public_paths:
+            return None
+
+        if request.path.startswith(public_prefixes):
             return None
 
         try:
