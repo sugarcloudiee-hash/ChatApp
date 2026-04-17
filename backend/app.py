@@ -329,7 +329,7 @@ def _current_user(token: str | None = None):
 
 @app.before_request
 def require_auth():
-    public_paths = {"/", "/style.css", "/script.js"}
+    public_paths = {"/", "/style.css", "/script.js", "/favicon.ico"}
     if request.method == "OPTIONS" or request.path in public_paths or request.path.startswith("/download") or request.path.startswith("/socket.io"):
         return None
 
@@ -426,6 +426,12 @@ def style():
 @app.get("/script.js")
 def script():
     return send_from_directory(app.static_folder, "script.js")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    # Return no-content to avoid auth noise when a favicon file is not provided.
+    return "", 204
 
 
 @app.post("/session")

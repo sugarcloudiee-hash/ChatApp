@@ -23,6 +23,13 @@ const overlayDialog = document.getElementById("loginOverlay");
 let overlayKeydownHandler = null;
 let modalKeydownHandler = null;
 
+const authSection = document.getElementById("authSection");
+const roomSetupSection = document.getElementById("roomSetupSection");
+const authTabLogin = document.getElementById("authTabLogin");
+const authTabSignup = document.getElementById("authTabSignup");
+const confirmPasswordGroup = document.getElementById("confirmPasswordGroup");
+const authSubmitBtn = document.getElementById("authSubmitBtn");
+
 const createTabBtn = document.getElementById("tabCreate");
 const joinTabBtn = document.getElementById("tabJoin");
 
@@ -39,6 +46,7 @@ const joinRoomKey = document.getElementById("joinRoomKey");
 const joinSubmitBtn = document.getElementById("joinSubmitBtn");
 const authEmail = document.getElementById("authEmail");
 const authPassword = document.getElementById("authPassword");
+const authConfirmPassword = document.getElementById("authConfirmPassword");
 
 const REACTION_EMOJIS = ["❤️", "👍", "😂", "🎉", "😮"];
 // Use your backend Flask server URL here.
@@ -62,6 +70,7 @@ let awaitingApproval = false;
 let pendingRequests = [];  // For host: list of pending join requests
 let roomMaxMembers = 10;  // Current room capacity
 let roomMemberCount = 0;  // Current members in room
+let currentAuthMode = "login";
 
 function setControlsEnabled(enabled) {
   if (awaitingApproval) {
@@ -74,7 +83,8 @@ function setControlsEnabled(enabled) {
 }
 
 function clearAuthErrors() {
-  [authEmail, authPassword].forEach((input) => {
+  [authEmail, authPassword, authConfirmPassword].forEach((input) => {
+    if (!input) return;
     const errorEl = document.getElementById(`${input.id}Error`);
     if (errorEl) {
       errorEl.textContent = "";
@@ -83,12 +93,13 @@ function clearAuthErrors() {
   });
 }
 
-function validateAuthForm() {
+function validateAuthForm(mode = "login") {
   let valid = true;
   clearAuthErrors();
 
   const email = authEmail.value.trim();
   const password = authPassword.value;
+  const confirmPassword = authConfirmPassword ? authConfirmPassword.value : "";
 
   if (!email) {
     const errorEl = document.getElementById("authEmailError");
@@ -107,6 +118,26 @@ function validateAuthForm() {
     if (errorEl) errorEl.textContent = "Enter your password.";
     authPassword.classList.add("invalid");
     valid = false;
+  }
+
+  if (mode === "signup") {
+    if (password.length < 6) {
+      const errorEl = document.getElementById("authPasswordError");
+      if (errorEl) errorEl.textContent = "Use at least 6 characters.";
+      authPassword.classList.add("invalid");
+      valid = false;
+    }
+    if (!confirmPassword) {
+      const errorEl = document.getElementById("authConfirmPasswordError");
+      if (errorEl) errorEl.textContent = "Confirm your password.";
+      authConfirmPassword.classList.add("invalid");
+      valid = false;
+    } else if (password !== confirmPassword) {
+      const errorEl = document.getElementById("authConfirmPasswordError");
+      if (errorEl) errorEl.textContent = "Passwords do not match.";
+      authConfirmPassword.classList.add("invalid");
+      valid = false;
+    }
   }
 
   return valid;
@@ -140,42 +171,42 @@ async function restoreAuth() {
   }
 }
 
-async function signInOrSignUp(email, password) {
-  let { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-  if (error && error.status === 400) {
-    const signUpResult = await supabaseClient.auth.signUp({ email, password });
-    if (signUpResult.error) {
-      throw signUpResult.error;
-    }
-    if (!signUpResult.data.session) {
-      throw new Error("Check your email to confirm sign-up before signing in.");
-    }
-    data = signUpResult.data;
-    error = signUpResult.error;
-  }
-
+async function signInWithEmail(email, password) {
+  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if (error) {
-    throw new Error(error.message || "Unable to sign in.");
+    throw new Error(error.message || "Unable to log in.");
   }
-
   if (!data?.session?.user) {
-    throw new Error("Auth failed, please retry.");
+    throw new Error("Login failed, please retry.");
   }
-
   setAuthState(data.session.user, data.session);
   return data.session;
 }
 
-async function authenticate() {
+async function signUpWithEmail(email, password) {
+  const { data, error } = await supabaseClient.auth.signUp({ email, password });
+  if (error) {
+    throw new Error(error.message || "Unable to create account.");
+  }
+  if (!data?.session?.user) {
+    throw new Error("Sign-up succeeded. Check your email to verify, then log in.");
+  }
+  setAuthState(data.session.user, data.session);
+  return data.session;
+}
+
+async function authenticate(mode = "login") {
   if (supabaseSession?.access_token) {
     return supabaseSession;
   }
-  if (!validateAuthForm()) {
+  if (!validateAuthForm(mode)) {
     throw new Error("Invalid auth credentials.");
   }
   const email = authEmail.value.trim();
   const password = authPassword.value;
-  const session = await signInOrSignUp(email, password);
+  const session = mode === "signup"
+    ? await signUpWithEmail(email, password)
+    : await signInWithEmail(email, password);
   return session;
 }
 
@@ -464,6 +495,30 @@ function setActiveTab(tab) {
   }
 }
 
+function setAuthMode(mode) {
+  const signup = mode === "signup";
+  currentAuthMode = signup ? "signup" : "login";
+  authTabLogin.classList.toggle("active", !signup);
+  authTabSignup.classList.toggle("active", signup);
+  authTabLogin.setAttribute("aria-selected", signup ? "false" : "true");
+  authTabSignup.setAttribute("aria-selected", signup ? "true" : "false");
+  confirmPasswordGroup.classList.toggle("hidden", !signup);
+  authPassword.setAttribute("autocomplete", signup ? "new-password" : "current-password");
+  authSubmitBtn.textContent = signup ? "Create account" : "Login";
+  clearAuthErrors();
+}
+
+function setOverlaySection(section) {
+  const showAuth = section === "auth";
+  authSection.classList.toggle("hidden", !showAuth);
+  roomSetupSection.classList.toggle("hidden", showAuth);
+  if (showAuth) {
+    authEmail.focus();
+  } else {
+    setActiveTab('create');
+  }
+}
+
 function setFieldError(input, message) {
   const errorEl = document.getElementById(`${input.id}Error`);
   if (!errorEl) return;
@@ -509,15 +564,17 @@ function trapFocus(event, container) {
 function showLogin(show) {
   loginOverlay.classList.toggle("hidden", !show);
   if (show) {
-    setActiveTab('create');
-    createRoomKey.value = createRoomKey.value || "";
-    joinRoomKey.value = joinRoomKey.value || "";
+    if (supabaseSession?.access_token) {
+      setOverlaySection("room");
+    } else {
+      setOverlaySection("auth");
+      setAuthMode(currentAuthMode);
+    }
     clearFormErrors(createScreen);
     clearFormErrors(joinScreen);
     clearAuthErrors();
     overlayKeydownHandler = (event) => trapFocus(event, loginOverlay);
     overlayDialog.addEventListener('keydown', overlayKeydownHandler);
-    authEmail.focus();
   } else {
     if (overlayKeydownHandler) {
       overlayDialog.removeEventListener('keydown', overlayKeydownHandler);
@@ -1167,6 +1224,48 @@ async function sendFileMessage(file) {
 }
 
 // Create Room
+authTabLogin.addEventListener("click", () => {
+  setAuthMode("login");
+});
+
+authTabSignup.addEventListener("click", () => {
+  setAuthMode("signup");
+});
+
+authSubmitBtn.addEventListener("click", async () => {
+  try {
+    await authenticate(currentAuthMode);
+    setOverlaySection("room");
+    updateRoomInfo();
+  } catch (err) {
+    alert(err.message || "Authentication failed.");
+  }
+});
+
+authEmail.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    authPassword.focus();
+  }
+});
+
+authPassword.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  if (currentAuthMode === "signup" && !confirmPasswordGroup.classList.contains("hidden")) {
+    authConfirmPassword.focus();
+    return;
+  }
+  authSubmitBtn.click();
+});
+
+authConfirmPassword.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    authSubmitBtn.click();
+  }
+});
+
 generateKeyBtn.addEventListener("click", () => {
   createRoomKey.value = generateInviteKey();
   setFieldError(createRoomKey, "");
@@ -1183,6 +1282,12 @@ joinTabBtn.addEventListener("click", () => {
 createSubmitBtn.addEventListener("click", async () => {
   const rkey = createRoomKey.value.trim();
   const maxMembers = parseInt(maxMembersInput.value) || 10;
+
+  if (!supabaseSession?.access_token) {
+    setOverlaySection("auth");
+    alert("Please log in or sign up before creating a room.");
+    return;
+  }
   
   if (!validateRoomForm(createScreen, createRoomKey)) {
     return;
@@ -1195,7 +1300,6 @@ createSubmitBtn.addEventListener("click", async () => {
   
   if (!setRoomKey(rkey)) return;
   try {
-    await authenticate();
     sessionStorage.setItem("roomMaxMembers", maxMembers);
     showLogin(false);
     updateRoomInfo();
@@ -1217,6 +1321,12 @@ maxMembersInput.addEventListener("keydown", (event) => {
 // Join Room
 joinSubmitBtn.addEventListener("click", async () => {
   const rkey = joinRoomKey.value.trim();
+
+  if (!supabaseSession?.access_token) {
+    setOverlaySection("auth");
+    alert("Please log in or sign up before joining a room.");
+    return;
+  }
   
   if (!validateRoomForm(joinScreen, joinRoomKey)) {
     return;
@@ -1224,7 +1334,6 @@ joinSubmitBtn.addEventListener("click", async () => {
   
   if (!setRoomKey(rkey)) return;
   try {
-    await authenticate();
     showLogin(false);
     updateRoomInfo();
     connectSocket();
