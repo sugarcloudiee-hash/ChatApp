@@ -1,6 +1,14 @@
 const messagesEl = document.getElementById("messages");
 const presenceEl = document.getElementById("presence");
 const typingIndicator = document.getElementById("typingIndicator");
+const syncPlayerPanel = document.getElementById("syncPlayerPanel");
+const syncPlayerTitle = document.getElementById("syncPlayerTitle");
+const syncPlayerStatus = document.getElementById("syncPlayerStatus");
+const syncVideo = document.getElementById("syncVideo");
+const syncAudio = document.getElementById("syncAudio");
+const syncEmbed = document.getElementById("syncEmbed");
+const syncExternalCard = document.getElementById("syncExternalCard");
+const syncExternalLink = document.getElementById("syncExternalLink");
 const messageInput = document.getElementById("messageInput");
 const sendBtn = document.getElementById("sendBtn");
 const attachBtn = document.getElementById("attachBtn");
@@ -37,18 +45,22 @@ const joinTabBtn = document.getElementById("tabJoin");
 const createScreen = document.getElementById("createScreen");
 const createRoomKey = document.getElementById("createRoomKey");
 const generateKeyBtn = document.getElementById("generateKeyBtn");
-const maxMembersInput = document.getElementById("maxMembersInput");
+const roomPrivacy = document.getElementById("roomPrivacy");
 const createSubmitBtn = document.getElementById("createSubmitBtn");
 
 // Join Room Screen
 const joinScreen = document.getElementById("joinScreen");
 const joinRoomKey = document.getElementById("joinRoomKey");
+const joinInviteToken = document.getElementById("joinInviteToken");
 const joinSubmitBtn = document.getElementById("joinSubmitBtn");
+const inviteByUsernameWrap = document.getElementById("inviteByUsernameWrap");
+const inviteUsernameInput = document.getElementById("inviteUsernameInput");
+const inviteUsernameBtn = document.getElementById("inviteUsernameBtn");
 const authEmail = document.getElementById("authEmail");
 const authPassword = document.getElementById("authPassword");
 const authConfirmPassword = document.getElementById("authConfirmPassword");
 
-const REACTION_EMOJIS = ["❤️", "👍", "😂", "🎉", "😮"];
+const REACTION_EMOJIS = ["\u2764\uFE0F", "\uD83D\uDC4D", "\uD83D\uDE02", "\uD83C\uDF89", "\uD83D\uDE2E"];
 // Use your backend Flask server URL here.
 // If you deploy the frontend separately, this should point to the backend service URL.
 // Replace the default URL below with your Render service URL if different.
@@ -59,18 +71,512 @@ const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 let supabaseSession = null;
 let supabaseUser = null;
 let socket = null;
-let username = sessionStorage.getItem("username") || "";
-let displayName = sessionStorage.getItem("displayName") || "";
-let roomKey = sessionStorage.getItem("roomKey") || "";
-let avatar = sessionStorage.getItem("avatar") || "";
+let username = "";
+let displayName = "";
+let roomKey = "";
+let avatar = "";
 let typingTimeout = null;
 let isTyping = false;
 let isHost = false;
 let awaitingApproval = false;
 let pendingRequests = [];  // For host: list of pending join requests
-let roomMaxMembers = 10;  // Current room capacity
 let roomMemberCount = 0;  // Current members in room
+let roomIsPrivate = true;
+let roomInviteToken = "";
+let roomInviteLink = "";
 let currentAuthMode = "login";
+let suppressVideoSync = false;
+
+function extractFirstUrl(text) {
+  const input = String(text || "").trim();
+  if (!input) return "";
+  const match = input.match(/https?:\/\/[^\s]+/i);
+  return match ? match[0] : "";
+}
+
+function normalizeUrl(input) {
+  const value = String(input || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  return "";
+}
+
+function parseYouTubeId(urlObj) {
+  const host = (urlObj.hostname || "").toLowerCase();
+  if (host === "youtu.be") {
+    return urlObj.pathname.replace(/^\//, "").split("/")[0] || "";
+  }
+  if (host.endsWith("youtube.com")) {
+    if (urlObj.pathname === "/watch") {
+      return urlObj.searchParams.get("v") || "";
+    }
+    if (urlObj.pathname.startsWith("/shorts/")) {
+      return urlObj.pathname.split("/")[2] || "";
+    }
+    if (urlObj.pathname.startsWith("/embed/")) {
+      return urlObj.pathname.split("/")[2] || "";
+    }
+  }
+  return "";
+}
+
+function parseGoogleDriveId(urlObj) {
+  const host = (urlObj.hostname || "").toLowerCase();
+  if (!host.endsWith("drive.google.com")) return "";
+
+  const fromQuery = urlObj.searchParams.get("id");
+  if (fromQuery) return fromQuery;
+
+  const filePattern = urlObj.pathname.match(/\/file\/d\/([^/]+)/i);
+  if (filePattern && filePattern[1]) return filePattern[1];
+
+  const ucPattern = urlObj.pathname.match(/\/uc$/i);
+  if (ucPattern) {
+    return urlObj.searchParams.get("export") ? (urlObj.searchParams.get("id") || "") : "";
+  }
+
+  return "";
+}
+
+function resolveDropboxVideoUrl(urlObj) {
+  const host = (urlObj.hostname || "").toLowerCase();
+  if (host.endsWith("dropboxusercontent.com")) {
+    return urlObj.toString();
+  }
+  if (!host.endsWith("dropbox.com")) return "";
+
+  const direct = new URL(urlObj.toString());
+  direct.searchParams.delete("dl");
+  direct.searchParams.set("raw", "1");
+  return direct.toString();
+}
+
+function isGooglePhotosUrl(urlObj) {
+  const host = (urlObj.hostname || "").toLowerCase();
+  return host === "photos.google.com" || host.endsWith(".photos.google.com");
+}
+
+function resolveStreamSource(input, preferredKind = "") {
+  const urlText = normalizeUrl(input);
+  if (!urlText) return null;
+
+  let urlObj;
+  try {
+    urlObj = new URL(urlText);
+  } catch {
+    return null;
+  }
+
+  const forceKind = String(preferredKind || "").trim().toLowerCase();
+  const ext = (urlObj.pathname.split(".").pop() || "").toLowerCase();
+  const directVideoExts = new Set(["mp4", "webm", "ogg", "ogv", "mov", "m4v"]);
+  const directAudioExts = new Set(["mp3", "wav", "m4a", "aac", "oga", "ogg", "opus", "flac", "webm"]);
+
+  const youtubeId = parseYouTubeId(urlObj);
+  if (youtubeId) {
+    return {
+      kind: "embed",
+      provider: "YouTube",
+      sourceUrl: urlText,
+      embedUrl: `https://www.youtube.com/embed/${youtubeId}?rel=0&modestbranding=1`,
+      label: "YouTube stream",
+    };
+  }
+
+  const driveId = parseGoogleDriveId(urlObj);
+  if (driveId) {
+    return {
+      kind: "embed",
+      provider: "Google Drive",
+      sourceUrl: urlText,
+      embedUrl: `https://drive.google.com/file/d/${driveId}/preview`,
+      label: "Google Drive stream",
+    };
+  }
+
+  const dropboxVideoUrl = resolveDropboxVideoUrl(urlObj);
+  if (dropboxVideoUrl) {
+    return {
+      kind: "video",
+      provider: "Dropbox",
+      sourceUrl: dropboxVideoUrl,
+      embedUrl: "",
+      label: "Dropbox stream",
+    };
+  }
+
+  if (isGooglePhotosUrl(urlObj)) {
+    return {
+      kind: "external",
+      provider: "Google Photos",
+      sourceUrl: urlText,
+      embedUrl: "",
+      label: "Google Photos link",
+    };
+  }
+
+  if (forceKind === "embed") {
+    return null;
+  }
+
+  if (forceKind === "audio") {
+    return {
+      kind: "audio",
+      provider: "Direct",
+      sourceUrl: urlText,
+      embedUrl: "",
+      label: "Shared audio",
+    };
+  }
+
+  if (forceKind === "video" || directVideoExts.has(ext) || urlObj.pathname.includes("/download/")) {
+    return {
+      kind: "video",
+      provider: "Direct",
+      sourceUrl: urlText,
+      embedUrl: "",
+      label: "Shared video",
+    };
+  }
+
+  if (directAudioExts.has(ext)) {
+    return {
+      kind: "audio",
+      provider: "Direct",
+      sourceUrl: urlText,
+      embedUrl: "",
+      label: "Shared audio",
+    };
+  }
+
+  return null;
+}
+
+function createStreamActionButton(streamInfo, title, sourceKind = "") {
+  if (!streamInfo) return null;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "sync-video-btn";
+  if (streamInfo.kind === "embed") {
+    button.textContent = `Open ${streamInfo.provider} stream`;
+  } else if (streamInfo.kind === "external") {
+    button.textContent = `Open ${streamInfo.provider} link`;
+  } else if (streamInfo.kind === "audio") {
+    button.textContent = "Listen together";
+  } else {
+    button.textContent = streamInfo.provider === "Dropbox" ? "Watch Dropbox stream" : "Watch together";
+  }
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    loadSyncedVideo(streamInfo.sourceUrl, title || streamInfo.label, sourceKind || streamInfo.kind);
+  });
+  return button;
+}
+
+function getSyncedVideoPayload() {
+  if (!syncVideo || !syncAudio) return null;
+
+  if (!syncAudio.classList.contains("hidden") && syncAudio.src) {
+    return {
+      source_url: syncAudio.dataset.sourceUrl || syncAudio.src,
+      source_kind: syncAudio.dataset.sourceKind || "audio",
+      source_title: syncPlayerTitle ? syncPlayerTitle.textContent : "",
+      current_time: Number.isFinite(syncAudio.currentTime) ? syncAudio.currentTime : 0,
+      playing: !syncAudio.paused,
+      playback_rate: syncAudio.playbackRate || 1,
+    };
+  }
+
+  if (!syncVideo.src || syncVideo.classList.contains("hidden")) return null;
+  return {
+    source_url: syncVideo.dataset.sourceUrl || syncVideo.src,
+    source_kind: syncVideo.dataset.sourceKind || "video",
+    source_title: syncPlayerTitle ? syncPlayerTitle.textContent : "",
+    current_time: Number.isFinite(syncVideo.currentTime) ? syncVideo.currentTime : 0,
+    playing: !syncVideo.paused,
+    playback_rate: syncVideo.playbackRate || 1,
+  };
+}
+
+function setSyncPlayerVisible(visible) {
+  if (!syncPlayerPanel) return;
+  syncPlayerPanel.classList.toggle("hidden", !visible);
+}
+
+function updateSyncPlayerStatus(text) {
+  if (syncPlayerStatus) {
+    syncPlayerStatus.textContent = text;
+  }
+}
+
+function applySyncedVideoState(state) {
+  if (!syncVideo) return;
+  if (!state || !state.source_url) {
+    syncVideo.pause();
+    syncVideo.removeAttribute("src");
+    syncVideo.load();
+    syncVideo.classList.remove("hidden");
+    delete syncVideo.dataset.sourceKind;
+    if (syncAudio) {
+      syncAudio.pause();
+      syncAudio.removeAttribute("src");
+      syncAudio.load();
+      syncAudio.classList.add("hidden");
+      delete syncAudio.dataset.sourceKind;
+    }
+    if (syncEmbed) {
+      syncEmbed.classList.add("hidden");
+      syncEmbed.removeAttribute("src");
+    }
+    if (syncExternalCard) {
+      syncExternalCard.classList.add("hidden");
+    }
+    if (syncExternalLink) {
+      syncExternalLink.removeAttribute("href");
+    }
+    setSyncPlayerVisible(false);
+    if (syncPlayerTitle) syncPlayerTitle.textContent = "No shared media loaded";
+    updateSyncPlayerStatus("Idle");
+    return;
+  }
+
+  const nextSource = state.source_url;
+  const sourceKind = String(state.source_kind || "").trim().toLowerCase();
+  const streamInfo = resolveStreamSource(nextSource, sourceKind);
+  if (!streamInfo) {
+    updateSyncPlayerStatus("Unsupported stream URL");
+    return;
+  }
+
+  if (streamInfo.kind === "embed") {
+    if (syncEmbed) {
+      const currentEmbed = syncEmbed.getAttribute("src") || "";
+      if (currentEmbed !== streamInfo.embedUrl) {
+        syncEmbed.setAttribute("src", streamInfo.embedUrl);
+      }
+      syncEmbed.classList.remove("hidden");
+    }
+    syncVideo.pause();
+    syncVideo.classList.add("hidden");
+    syncVideo.removeAttribute("src");
+    syncVideo.load();
+    syncVideo.dataset.sourceUrl = streamInfo.sourceUrl;
+    syncVideo.dataset.sourceKind = "embed";
+    if (syncAudio) {
+      syncAudio.pause();
+      syncAudio.classList.add("hidden");
+      syncAudio.removeAttribute("src");
+      syncAudio.load();
+    }
+    if (syncExternalCard) {
+      syncExternalCard.classList.add("hidden");
+    }
+    if (syncExternalLink) {
+      syncExternalLink.removeAttribute("href");
+    }
+    if (syncPlayerTitle) syncPlayerTitle.textContent = state.source_title || streamInfo.label;
+    setSyncPlayerVisible(true);
+    updateSyncPlayerStatus("Streaming");
+    return;
+  }
+
+  if (streamInfo.kind === "external") {
+    if (syncEmbed) {
+      syncEmbed.classList.add("hidden");
+      syncEmbed.removeAttribute("src");
+    }
+    syncVideo.pause();
+    syncVideo.classList.add("hidden");
+    syncVideo.removeAttribute("src");
+    syncVideo.load();
+    syncVideo.dataset.sourceUrl = streamInfo.sourceUrl;
+    syncVideo.dataset.sourceKind = "external";
+    if (syncAudio) {
+      syncAudio.pause();
+      syncAudio.classList.add("hidden");
+      syncAudio.removeAttribute("src");
+      syncAudio.load();
+    }
+    if (syncExternalCard) {
+      syncExternalCard.classList.remove("hidden");
+    }
+    if (syncExternalLink) {
+      syncExternalLink.href = streamInfo.sourceUrl;
+      syncExternalLink.textContent = `Open ${streamInfo.provider} in new tab`;
+    }
+    if (syncPlayerTitle) syncPlayerTitle.textContent = state.source_title || streamInfo.label;
+    setSyncPlayerVisible(true);
+    updateSyncPlayerStatus("Open link to watch");
+    return;
+  }
+
+  if (streamInfo.kind === "audio" && syncAudio) {
+    if (syncEmbed) {
+      syncEmbed.classList.add("hidden");
+      syncEmbed.removeAttribute("src");
+    }
+    if (syncExternalCard) {
+      syncExternalCard.classList.add("hidden");
+    }
+    if (syncExternalLink) {
+      syncExternalLink.removeAttribute("href");
+    }
+
+    syncVideo.pause();
+    syncVideo.classList.add("hidden");
+    syncVideo.removeAttribute("src");
+    syncVideo.load();
+
+    syncAudio.classList.remove("hidden");
+    const nextTitle = state.source_title || "Shared audio";
+    const nextTime = Math.max(0, Number(state.position ?? state.current_time ?? 0) || 0);
+    const shouldPlay = Boolean(state.playing);
+    const nextRate = Number(state.playback_rate || 1) || 1;
+    const sourceChanged = syncAudio.dataset.sourceUrl !== streamInfo.sourceUrl;
+
+    syncAudio.dataset.sourceUrl = streamInfo.sourceUrl;
+    syncAudio.dataset.sourceKind = "audio";
+    if (syncPlayerTitle) syncPlayerTitle.textContent = nextTitle;
+    setSyncPlayerVisible(true);
+    updateSyncPlayerStatus(shouldPlay ? "Playing" : "Paused");
+
+    const finalizeAudio = () => {
+      suppressVideoSync = true;
+      syncAudio.playbackRate = nextRate;
+      try {
+        if (Math.abs(syncAudio.currentTime - nextTime) > 0.25) {
+          syncAudio.currentTime = nextTime;
+        }
+      } catch (err) {
+        console.warn("Unable to sync audio time", err);
+      }
+      if (shouldPlay) {
+        const playPromise = syncAudio.play();
+        if (playPromise && typeof playPromise.catch === "function") {
+          playPromise.catch(() => {});
+        }
+      } else {
+        syncAudio.pause();
+      }
+      window.setTimeout(() => {
+        suppressVideoSync = false;
+      }, 150);
+    };
+
+    if (sourceChanged) {
+      syncAudio.src = streamInfo.sourceUrl;
+      syncAudio.load();
+      syncAudio.addEventListener("loadedmetadata", finalizeAudio, { once: true });
+      return;
+    }
+
+    if (syncAudio.readyState >= 1) {
+      finalizeAudio();
+      return;
+    }
+
+    syncAudio.addEventListener("loadedmetadata", finalizeAudio, { once: true });
+    return;
+  }
+
+  if (syncEmbed) {
+    syncEmbed.classList.add("hidden");
+    syncEmbed.removeAttribute("src");
+  }
+  if (syncExternalCard) {
+    syncExternalCard.classList.add("hidden");
+  }
+  if (syncExternalLink) {
+    syncExternalLink.removeAttribute("href");
+  }
+  if (syncAudio) {
+    syncAudio.pause();
+    syncAudio.classList.add("hidden");
+    syncAudio.removeAttribute("src");
+    syncAudio.load();
+  }
+
+  syncVideo.classList.remove("hidden");
+  const nextTitle = state.source_title || "Shared video";
+  const nextTime = Math.max(0, Number(state.position ?? state.current_time ?? 0) || 0);
+  const shouldPlay = Boolean(state.playing);
+  const nextRate = Number(state.playback_rate || 1) || 1;
+  const sourceChanged = syncVideo.dataset.sourceUrl !== streamInfo.sourceUrl;
+
+  syncVideo.dataset.sourceUrl = streamInfo.sourceUrl;
+  syncVideo.dataset.sourceKind = "video";
+  if (syncPlayerTitle) syncPlayerTitle.textContent = nextTitle;
+  setSyncPlayerVisible(true);
+  updateSyncPlayerStatus(shouldPlay ? "Playing" : "Paused");
+
+  const finalize = () => {
+    suppressVideoSync = true;
+    syncVideo.playbackRate = nextRate;
+    try {
+      if (Math.abs(syncVideo.currentTime - nextTime) > 0.25) {
+        syncVideo.currentTime = nextTime;
+      }
+    } catch (err) {
+      console.warn("Unable to sync video time", err);
+    }
+    if (shouldPlay) {
+      const playPromise = syncVideo.play();
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(() => {});
+      }
+    } else {
+      syncVideo.pause();
+    }
+    window.setTimeout(() => {
+      suppressVideoSync = false;
+    }, 150);
+  };
+
+  if (sourceChanged) {
+    syncVideo.src = streamInfo.sourceUrl;
+    syncVideo.load();
+    syncVideo.addEventListener("loadedmetadata", finalize, { once: true });
+    return;
+  }
+
+  if (syncVideo.readyState >= 1) {
+    finalize();
+    return;
+  }
+
+  syncVideo.addEventListener("loadedmetadata", finalize, { once: true });
+}
+
+function emitSyncedVideoState() {
+  if (!socket || !socket.connected || suppressVideoSync) return;
+  const payload = getSyncedVideoPayload();
+  if (!payload || !payload.source_url) return;
+  socket.emit("video_sync_state", payload);
+}
+
+function loadSyncedVideo(sourceUrl, sourceTitle, sourceKind = "") {
+  if (!sourceUrl) return;
+  const streamInfo = resolveStreamSource(sourceUrl, sourceKind);
+  if (!streamInfo) {
+    showToast("Unsupported stream URL. Try Google Drive, Dropbox, Google Photos, YouTube, or a direct video/audio file.", { type: "error" });
+    return;
+  }
+  applySyncedVideoState({
+    source_url: streamInfo.sourceUrl,
+    source_kind: streamInfo.kind,
+    source_title: sourceTitle || streamInfo.label || "Shared video",
+    current_time: 0,
+    playing: false,
+    playback_rate: 1,
+  });
+  if (socket && socket.connected) {
+    socket.emit("video_sync_load", {
+      source_url: streamInfo.sourceUrl,
+      source_kind: streamInfo.kind,
+      source_title: sourceTitle || streamInfo.label || "Shared video",
+    });
+  }
+}
 
 function setControlsEnabled(enabled) {
   if (awaitingApproval) {
@@ -150,9 +656,6 @@ function setAuthState(user, session) {
     username = user.email || username;
     displayName = user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split("@")[0] || username;
     avatar = avatarForName(displayName || username);
-    sessionStorage.setItem("username", username);
-    sessionStorage.setItem("displayName", displayName);
-    sessionStorage.setItem("avatar", avatar);
   }
 }
 
@@ -309,18 +812,8 @@ function renderPresence(members) {
     color: var(--blue);
     margin-left: auto;
   `;
-  countBadge.textContent = `${roomMemberCount}/${roomMaxMembers} members`;
+  countBadge.textContent = `${roomMemberCount} members`;
   presenceEl.appendChild(countBadge);
-  
-  // Add host capacity control if user is host
-  if (isHost) {
-    const settingsBtn = document.createElement("button");
-    settingsBtn.className = "btn ghost small";
-    settingsBtn.style.cssText = "margin-left: 8px;";
-    settingsBtn.textContent = "⚙️ Settings";
-    settingsBtn.onclick = showCapacitySettings;
-    presenceEl.appendChild(settingsBtn);
-  }
 }
 
 function renderTyping(users) {
@@ -372,13 +865,22 @@ function validateFileSelection(file) {
     "video/mp4",
     "video/webm",
     "video/ogg",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/ogg",
+    "audio/webm",
+    "audio/aac",
+    "audio/mp4",
+    "audio/x-m4a",
     "application/pdf",
     "text/plain",
   ];
 
   if (!file) return "No file selected.";
   if (file.size > maxSize) return "File is too large. Max size is 50MB.";
-  if (!allowedTypes.includes(file.type)) return "File type is not supported. Allowed: PNG, JPG, GIF, MP4, PDF, TXT.";
+  if (!allowedTypes.includes(file.type)) return "File type is not supported. Allowed: PNG, JPG, GIF, MP4, MP3, WAV, OGG, M4A, PDF, TXT.";
   return null;
 }
 
@@ -413,6 +915,8 @@ function showFilePreview(file) {
     previewHtml = `<img class="preview-media" src="${previewUrl}" alt="${escapeText(file.name)}" />`;
   } else if (previewType === "video") {
     previewHtml = `<video class="preview-media" src="${previewUrl}" controls muted playsinline></video>`;
+  } else if (previewType === "audio") {
+    previewHtml = `<audio class="preview-media" src="${previewUrl}" controls></audio>`;
   } else {
     previewHtml = `<div class="preview-placeholder">Preview unavailable for this file type.</div>`;
   }
@@ -468,7 +972,8 @@ function showFilePreview(file) {
 }
 
 function updateRoomInfo() {
-  roomKeyLabel.textContent = roomKey ? `Room: ${roomKey}` : "No room selected";
+  const privacyText = roomIsPrivate ? "Private" : "Public";
+  roomKeyLabel.textContent = roomKey ? `Room: ${roomKey} (${privacyText})` : "No room selected";
   meLabel.textContent = `Signed in as ${displayName || username}`;
   if (roomKey) {
     copyInviteBtn.disabled = false;
@@ -477,7 +982,8 @@ function updateRoomInfo() {
   }
   hostBadge.classList.toggle('hidden', !isHost);
   memberBadge.classList.toggle('hidden', roomMemberCount <= 0);
-  memberBadge.textContent = roomMaxMembers ? `${roomMemberCount}/${roomMaxMembers}` : '';
+  memberBadge.textContent = roomMemberCount > 0 ? `${roomMemberCount} online` : '';
+  inviteByUsernameWrap.classList.toggle('hidden', !isHost || !roomKey);
 }
 
 function setActiveTab(tab) {
@@ -593,7 +1099,6 @@ function generateInviteKey() {
 function setRoomKey(room) {
   roomKey = String(room || "").trim();
   if (!roomKey) return false;
-  sessionStorage.setItem("roomKey", roomKey);
   updateRoomInfo();
   return true;
 }
@@ -609,9 +1114,6 @@ async function fetchCurrentUser() {
   username = user.username || "";
   displayName = user.display_name || user.email || "";
   avatar = user.avatar || avatarForName(displayName || username);
-  sessionStorage.setItem("username", username);
-  sessionStorage.setItem("displayName", displayName);
-  sessionStorage.setItem("avatar", avatar);
   updateRoomInfo();
 }
 
@@ -741,22 +1243,19 @@ function rejectJoin(guestUsername) {
   socket.emit("reject_join", { username: guestUsername });
 }
 
-function showCapacitySettings() {
-  const newCapacity = prompt(`Set maximum members for this room (1-100):\n\nCurrent: ${roomMaxMembers}`, roomMaxMembers);
-  if (newCapacity === null) return;
-  
-  const capacity = parseInt(newCapacity);
-  if (isNaN(capacity) || capacity < 1 || capacity > 100) {
-    alert("Please enter a number between 1 and 100");
-    return;
+function hydrateJoinFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const sharedRoom = String(params.get("room") || "").trim();
+  const sharedInvite = String(params.get("invite") || "").trim();
+  if (!sharedRoom) return;
+
+  joinRoomKey.value = sharedRoom;
+  roomKey = sharedRoom;
+
+  if (sharedInvite) {
+    joinInviteToken.value = sharedInvite;
+    roomInviteToken = sharedInvite;
   }
-  
-  if (!socket || !socket.connected) {
-    alert("Not connected");
-    return;
-  }
-  
-  socket.emit("update_room_capacity", { max_members: capacity });
 }
 
 function sendTypingStatus() {
@@ -905,6 +1404,26 @@ function renderMessage(msg) {
     video.src = msg.file_url;
     video.controls = true;
     contentWrapper.appendChild(video);
+    const streamInfo = resolveStreamSource(msg.file_url, "video");
+    const syncButton = createStreamActionButton(streamInfo, msg.message || "Shared video", "video");
+    if (syncButton) {
+      contentWrapper.appendChild(syncButton);
+    }
+    if (msg.message) {
+      content.textContent = msg.message;
+      contentWrapper.appendChild(content);
+    }
+  } else if (msg.type === "audio" && msg.file_url) {
+    const audio = document.createElement("audio");
+    audio.className = "media";
+    audio.src = msg.file_url;
+    audio.controls = true;
+    contentWrapper.appendChild(audio);
+    const streamInfo = resolveStreamSource(msg.file_url, "audio");
+    const syncButton = createStreamActionButton(streamInfo, msg.message || "Shared audio", "audio");
+    if (syncButton) {
+      contentWrapper.appendChild(syncButton);
+    }
     if (msg.message) {
       content.textContent = msg.message;
       contentWrapper.appendChild(content);
@@ -917,9 +1436,23 @@ function renderMessage(msg) {
     a.rel = "noreferrer";
     a.textContent = msg.message || "Download file";
     contentWrapper.appendChild(a);
+    const streamInfo = resolveStreamSource(msg.file_url);
+    const streamButton = createStreamActionButton(streamInfo, msg.message || "Shared video");
+    if (streamButton) {
+      contentWrapper.appendChild(streamButton);
+    }
   } else {
     content.textContent = msg.message || "";
     contentWrapper.appendChild(content);
+    const textUrl = extractFirstUrl(msg.message || "");
+    const streamInfo = resolveStreamSource(textUrl);
+    const streamButton = createStreamActionButton(streamInfo, msg.message || streamInfo?.label || "Shared video");
+    if (streamButton) {
+      const hint = document.createElement("div");
+      hint.className = "message-status";
+      hint.textContent = `Stream link detected: ${streamInfo.provider}`;
+      contentWrapper.append(hint, streamButton);
+    }
   }
 
   if (msg.edited && !msg.deleted) {
@@ -1001,14 +1534,14 @@ function connectSocket() {
   setControlsEnabled(false);
   setConnectionStatus('Connecting…');
   socket = io(BACKEND_BASE_URL, {
-    transports: ["polling"],
+    transports: ["websocket"],
     auth: {
       access_token: supabaseSession?.access_token,
       room_key: roomKey,
-      max_members: parseInt(sessionStorage.getItem("roomMaxMembers") || "10"),
+      is_private: roomIsPrivate,
+      invite_token: roomInviteToken,
     },
-    query: { room_key: roomKey },
-    upgrade: false,
+    query: { room_key: roomKey, invite: roomInviteToken },
   });
 
   socket.on("connect", () => {
@@ -1061,10 +1594,16 @@ function connectSocket() {
     updateMessage(message);
   });
 
-  socket.on("presence_update", ({ members, host, max_members, member_count }) => {
+  socket.on("presence_update", ({ members, host, member_count, is_private, invite_token, invite_link }) => {
     isHost = host === username;
-    if (max_members) roomMaxMembers = max_members;
     if (typeof member_count === 'number') roomMemberCount = member_count;
+    if (typeof is_private === 'boolean') roomIsPrivate = is_private;
+    if (invite_token) {
+      roomInviteToken = invite_token;
+    }
+    if (invite_link) {
+      roomInviteLink = new URL(invite_link, window.location.origin).toString();
+    }
     renderPresence(members);
     updateRoomInfo();
   });
@@ -1110,15 +1649,36 @@ function connectSocket() {
   });
 
   socket.on("room_capacity_updated", ({ max_members, member_count }) => {
-    roomMaxMembers = max_members;
     roomMemberCount = member_count;
-    // Trigger re-render of presence
-    const members = Object.values(ROOM_MEMBERS || {});
-    renderPresence(members);
+    updateRoomInfo();
+  });
+
+  socket.on("user_invited", ({ room_key, invite_token, invite_link, from }) => {
+    const action = confirm(`${from} invited you to room ${room_key}. Join now?`);
+    if (!action) return;
+    joinRoomKey.value = room_key;
+    joinInviteToken.value = invite_token || "";
+    roomKey = room_key;
+    roomInviteToken = invite_token || "";
+    roomInviteLink = invite_link ? new URL(invite_link, window.location.origin).toString() : "";
+    showLogin(false);
+    connectSocket();
+  });
+
+  socket.on("invite_result", ({ ok, message, username: invited }) => {
+    if (ok) {
+      showToast(`Invite sent to ${invited}`, { type: 'info' });
+      return;
+    }
+    alert(message || "Unable to send invite");
   });
 
   socket.on("typing_update", ({ typing }) => {
     renderTyping(typing || []);
+  });
+
+  socket.on("video_sync_state", (state) => {
+    applySyncedVideoState(state);
   });
 
   socket.on("connect_error", (err) => {
@@ -1140,6 +1700,7 @@ function connectSocket() {
     lastMessageDate = "";
     closePendingRequestsModal();
     clearPendingApprovalToast();
+    applySyncedVideoState(null);
   });
 }
 
@@ -1183,6 +1744,7 @@ function detectType(file) {
   const t = (file && file.type) || "";
   if (t.startsWith("image/")) return "image";
   if (t.startsWith("video/")) return "video";
+  if (t.startsWith("audio/")) return "audio";
   return "file";
 }
 
@@ -1281,7 +1843,7 @@ joinTabBtn.addEventListener("click", () => {
 
 createSubmitBtn.addEventListener("click", async () => {
   const rkey = createRoomKey.value.trim();
-  const maxMembers = parseInt(maxMembersInput.value) || 10;
+  const privateRoom = (roomPrivacy?.value || "private") === "private";
 
   if (!supabaseSession?.access_token) {
     setOverlaySection("auth");
@@ -1293,14 +1855,11 @@ createSubmitBtn.addEventListener("click", async () => {
     return;
   }
   
-  if (maxMembers < 1 || maxMembers > 100) {
-    setFieldError(maxMembersInput, "Enter a number between 1 and 100.");
-    return;
-  }
-  
   if (!setRoomKey(rkey)) return;
   try {
-    sessionStorage.setItem("roomMaxMembers", maxMembers);
+    roomIsPrivate = privateRoom;
+    roomInviteToken = "";
+    roomInviteLink = "";
     showLogin(false);
     updateRoomInfo();
     connectSocket();
@@ -1311,16 +1870,13 @@ createSubmitBtn.addEventListener("click", async () => {
 
 
 createRoomKey.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") maxMembersInput.focus();
-});
-
-maxMembersInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") createSubmitBtn.click();
 });
 
 // Join Room
 joinSubmitBtn.addEventListener("click", async () => {
   const rkey = joinRoomKey.value.trim();
+  const inviteToken = joinInviteToken.value.trim();
 
   if (!supabaseSession?.access_token) {
     setOverlaySection("auth");
@@ -1334,6 +1890,7 @@ joinSubmitBtn.addEventListener("click", async () => {
   
   if (!setRoomKey(rkey)) return;
   try {
+    roomInviteToken = inviteToken;
     showLogin(false);
     updateRoomInfo();
     connectSocket();
@@ -1347,10 +1904,15 @@ joinRoomKey.addEventListener("keydown", (event) => {
   if (event.key === "Enter") joinSubmitBtn.click();
 });
 
+joinInviteToken.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") joinSubmitBtn.click();
+});
+
 copyInviteBtn.addEventListener("click", async () => {
   if (!roomKey) return;
+  const inviteUrl = roomInviteLink || `${window.location.origin}/?room=${encodeURIComponent(roomKey)}${roomIsPrivate && roomInviteToken ? `&invite=${encodeURIComponent(roomInviteToken)}` : ""}`;
   try {
-    await navigator.clipboard.writeText(roomKey);
+    await navigator.clipboard.writeText(inviteUrl);
     copyInviteBtn.textContent = "Copied";
     setTimeout(() => {
       copyInviteBtn.textContent = "Copy invite";
@@ -1358,6 +1920,20 @@ copyInviteBtn.addEventListener("click", async () => {
   } catch {
     alert("Copy failed. Please copy the room key manually.");
   }
+});
+
+inviteUsernameBtn.addEventListener("click", () => {
+  const target = inviteUsernameInput.value.trim().toLowerCase();
+  if (!target) {
+    alert("Enter a username/email to invite.");
+    return;
+  }
+  if (!socket || !socket.connected) {
+    alert("Not connected");
+    return;
+  }
+  socket.emit("invite_user", { username: target });
+  inviteUsernameInput.value = "";
 });
 
 pendingModalClose.addEventListener("click", () => {
@@ -1376,14 +1952,13 @@ changeUserBtn.addEventListener("click", async () => {
   } catch (err) {
     console.warn("Supabase sign out failed", err);
   }
-  sessionStorage.removeItem("username");
-  sessionStorage.removeItem("displayName");
-  sessionStorage.removeItem("roomKey");
-  sessionStorage.removeItem("avatar");
   username = "";
   displayName = "";
   roomKey = "";
   avatar = "";
+  roomInviteToken = "";
+  roomInviteLink = "";
+  roomIsPrivate = true;
   supabaseSession = null;
   supabaseUser = null;
   isHost = false;
@@ -1428,10 +2003,53 @@ fileInput.addEventListener("change", async () => {
   showFilePreview(file);
 });
 
+if (syncVideo) {
+  syncVideo.addEventListener("play", () => {
+    if (suppressVideoSync) return;
+    emitSyncedVideoState();
+  });
+  syncVideo.addEventListener("pause", () => {
+    if (suppressVideoSync) return;
+    emitSyncedVideoState();
+  });
+  syncVideo.addEventListener("seeked", () => {
+    if (suppressVideoSync) return;
+    emitSyncedVideoState();
+  });
+  syncVideo.addEventListener("ratechange", () => {
+    if (suppressVideoSync) return;
+    emitSyncedVideoState();
+  });
+}
+
+if (syncAudio) {
+  syncAudio.addEventListener("play", () => {
+    if (suppressVideoSync) return;
+    emitSyncedVideoState();
+  });
+  syncAudio.addEventListener("pause", () => {
+    if (suppressVideoSync) return;
+    emitSyncedVideoState();
+  });
+  syncAudio.addEventListener("seeked", () => {
+    if (suppressVideoSync) return;
+    emitSyncedVideoState();
+  });
+  syncAudio.addEventListener("ratechange", () => {
+    if (suppressVideoSync) return;
+    emitSyncedVideoState();
+  });
+}
+
 // Reset date separator tracking
 lastMessageDate = "";
 
 (async () => {
+  hydrateJoinFromUrl();
+  if (roomPrivacy) {
+    roomPrivacy.value = roomIsPrivate ? "private" : "public";
+  }
+
   await restoreAuth();
 
   if (supabaseSession) {

@@ -1,0 +1,12 @@
+ROOM_HOSTS: dict[str, str] = {}  # room_key -> host_username
+ROOM_IDS: dict[str, str] = {}  # room_key -> unique room_id
+ROOM_MEMBERS: dict[str, dict[str, dict]] = {}  # room_key -> {username: member_info}
+ROOM_PENDING: dict[str, set[str]] = {}  # room_key -> {username}  (awaiting approval)
+ROOM_TYPING: dict[str, set[str]] = {}
+ROOM_PLAYBACK: dict[str, dict] = {}  # room_key -> shared video playback state
+ROOM_PRIVACY: dict[str, bool] = {}  # room_key -> True for private, False for public
+ROOM_INVITE_TOKENS: dict[str, str] = {}  # room_key -> link token for private room access
+ROOM_ALLOWED_USERS: dict[str, set[str]] = {}  # room_key -> invited usernames
+SID_ROOM: dict[str, str] = {}  # sid -> room_key
+SID_ROOM_ID: dict[str, str] = {}  # sid -> room_id
+SID_USERNAME: dict[str, str] = {}  # sid -> username

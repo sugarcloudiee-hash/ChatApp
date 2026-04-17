@@ -61,9 +61,11 @@
               <span id="createRoomKeyError" class="field-error"></span>
             </div>
             <div class="overlay-form">
-              <label for="maxMembersInput">Max members in room</label>
-              <input id="maxMembersInput" class="input" type="number" min="1" max="100" value="10" />
-              <span id="maxMembersInputError" class="field-error"></span>
+              <label for="roomPrivacy">Room privacy</label>
+              <select id="roomPrivacy" class="input">
+                <option value="private" selected>Private (invite only)</option>
+                <option value="public">Public (anyone with room key)</option>
+              </select>
             </div>
             <div class="overlay-actions">
               <button id="createSubmitBtn" class="btn primary" type="button">Create &amp; Join</button>
@@ -76,6 +78,10 @@
               <input id="joinRoomKey" class="input" type="text" placeholder="Room invite key" />
               <span class="field-note">Enter the room invite key shared by the host.</span>
               <span id="joinRoomKeyError" class="field-error"></span>
+            </div>
+            <div class="overlay-form">
+              <label for="joinInviteToken">Invite token (private rooms)</label>
+              <input id="joinInviteToken" class="input" type="text" placeholder="Optional token from invite link" />
             </div>
             <div class="overlay-actions">
               <button id="joinSubmitBtn" class="btn primary" type="button">Join Room</button>
@@ -94,6 +100,10 @@
           <div class="room-meta">
             <span id="roomKeyLabel" class="room-key"></span>
             <button id="copyInviteBtn" class="btn ghost small" type="button" aria-label="Copy room invite key">Copy invite</button>
+            <div id="inviteByUsernameWrap" class="invite-inline hidden">
+              <input id="inviteUsernameInput" class="input invite-inline-input" type="text" placeholder="Invite by username/email" />
+              <button id="inviteUsernameBtn" class="btn ghost small" type="button">Invite user</button>
+            </div>
           </div>
           <div id="connectionStatus" class="connection-status" role="status" aria-live="polite" aria-atomic="true">Disconnected</div>
         </div>
@@ -110,6 +120,35 @@
           <div id="presence" class="presence"></div>
           <div id="typingIndicator" class="typing-indicator" role="status" aria-live="polite" aria-atomic="true"></div>
         </div>
+        <section id="syncPlayerPanel" class="sync-player hidden" aria-label="Shared media playback">
+          <div class="sync-player-header">
+            <div>
+              <div class="sync-player-kicker">Synchronized playback</div>
+              <h2 id="syncPlayerTitle" class="sync-player-title">No shared media loaded</h2>
+            </div>
+            <div class="sync-player-status-wrap">
+              <span id="syncPlayerStatus" class="sync-player-status">Idle</span>
+              <span class="sync-player-note">Everyone follows the same playhead.</span>
+            </div>
+          </div>
+          <video id="syncVideo" class="sync-player-video" controls playsinline preload="metadata"></video>
+          <audio id="syncAudio" class="sync-player-audio hidden" controls preload="metadata"></audio>
+          <iframe
+            id="syncEmbed"
+            class="sync-player-embed hidden"
+            title="Shared stream"
+            allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+            allowfullscreen
+            loading="lazy"
+            referrerpolicy="strict-origin-when-cross-origin"
+          ></iframe>
+          <div id="syncExternalCard" class="sync-external-card hidden">
+            <div class="sync-external-title">External stream link</div>
+            <a id="syncExternalLink" class="sync-external-link" href="#" target="_blank" rel="noopener noreferrer">Open stream link</a>
+            <div class="sync-player-note">Use this for providers that do not allow direct embed playback.</div>
+          </div>
+          <div class="sync-player-hint">Supports shared video and music playback from direct files plus Google Drive, Dropbox, Google Photos, and YouTube links.</div>
+        </section>
         <div id="messages" class="messages" aria-live="polite"></div>
       </main>
 
@@ -117,10 +156,10 @@
 
       <footer class="composer">
         <button id="attachBtn" class="btn ghost" type="button" aria-label="Attach a file">Attach</button>
-        <input id="fileInput" type="file" accept="image/png,image/jpeg,image/jpg,image/gif,video/mp4,video/webm,video/ogg,.pdf,.txt" hidden />
+        <input id="fileInput" type="file" accept="image/png,image/jpeg,image/jpg,image/gif,video/mp4,video/webm,video/ogg,audio/mpeg,audio/mp3,audio/wav,audio/ogg,audio/webm,audio/aac,audio/mp4,.m4a,.pdf,.txt" hidden />
         <input id="messageInput" class="input grow" type="text" placeholder="Message..." autocomplete="off" aria-label="Message input" />
         <button id="sendBtn" class="btn primary" type="button" aria-label="Send message">Send</button>
-        <span class="file-hint">Allowed: PNG, JPG, GIF, MP4, PDF, TXT. Max 50MB.</span>
+        <span class="file-hint">Allowed: PNG, JPG, GIF, MP4, MP3, WAV, OGG, M4A, PDF, TXT. Max 50MB.</span>
       </footer>
     </div>
 
