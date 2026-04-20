@@ -27,6 +27,7 @@ const connectionStatus = document.getElementById("connectionStatus");
 const hostBadge = document.getElementById("hostBadge");
 const memberBadge = document.getElementById("memberBadge");
 const changeUserBtn = document.getElementById("changeUserBtn");
+const overlaySignOutBtn = document.getElementById("overlaySignOutBtn");
 const toastContainer = document.getElementById("toastContainer");
 const pendingModal = document.getElementById("pendingModal");
 const pendingModalContent = document.getElementById("pendingModalContent");
@@ -875,12 +876,17 @@ function renderTyping(users) {
     return;
   }
   const text = others.length === 1 ? `${others[0]} is typing` : `${others.join(", ")} are typing`;
-  typingIndicator.innerHTML = `<span>${escapeText(text)}</span><span class="typing-dots">ΓÇóΓÇóΓÇó</span>`;
+  typingIndicator.innerHTML = `<span>${escapeText(text)}</span><span class="typing-dots">...</span>`;
 }
 
 function setConnectionStatus(status) {
   connectionStatus.textContent = status;
-  connectionStatus.style.color = status === 'Connected' ? '#7EE787' : status === 'ConnectingΓÇª' ? '#A9D6FF' : '#FF9FAB';
+  const normalized = String(status || '').toLowerCase();
+  connectionStatus.dataset.state = normalized.includes('connected')
+    ? 'connected'
+    : normalized.includes('connecting')
+      ? 'connecting'
+      : 'disconnected';
 }
 
 function showEmptyState() {
@@ -888,7 +894,7 @@ function showEmptyState() {
     <div class="empty-state">
       <div>
         <h2>No messages yet</h2>
-        <p>Send the first message to start the conversation.</p>
+        <p>Say hello, attach a file, or share a stream link to get the room moving.</p>
       </div>
     </div>
   `;
@@ -1584,7 +1590,7 @@ function updateMessage(msg) {
 function connectSocket() {
   if (socket) return;
   setControlsEnabled(false);
-  setConnectionStatus('ConnectingΓÇª');
+  setConnectionStatus('Connecting...');
   socket = io(BACKEND_BASE_URL, {
     transports: ["websocket"],
     auth: {
@@ -1998,7 +2004,7 @@ document.addEventListener("click", () => {
   });
 });
 
-changeUserBtn.addEventListener("click", async () => {
+async function handleSignOut() {
   try {
     await supabaseClient.auth.signOut();
   } catch (err) {
@@ -2024,7 +2030,12 @@ changeUserBtn.addEventListener("click", async () => {
   }
   updateRoomInfo();
   showLogin(true);
-});
+}
+
+changeUserBtn.addEventListener("click", handleSignOut);
+if (overlaySignOutBtn) {
+  overlaySignOutBtn.addEventListener("click", handleSignOut);
+}
 
 sendBtn.addEventListener("click", async () => {
   await sendTextMessage();

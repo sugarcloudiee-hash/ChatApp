@@ -1,0 +1,9 @@
+﻿
+FullName                                              
+--------                                              
+C:\Users\tkulk\Desktop\T Pro\MyApp\frontend\.env      
+C:\Users\tkulk\Desktop\T Pro\MyApp\frontend\index.html
+C:\Users\tkulk\Desktop\T Pro\MyApp\frontend\script.js 
+C:\Users\tkulk\Desktop\T Pro\MyApp\frontend\style.css 
+
+

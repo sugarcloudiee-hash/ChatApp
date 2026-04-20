@@ -90,8 +90,44 @@ body{
 }
 
 .connection-status{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 7px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.05);
   color: var(--muted);
   font-size: 12px;
+  line-height: 1;
+}
+
+.connection-status::before{
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 4px rgba(255,255,255,0.04);
+}
+
+.connection-status[data-state="connected"]{
+  color: #7EE787;
+  border-color: rgba(126,231,135,0.25);
+  background: rgba(126,231,135,0.10);
+}
+
+.connection-status[data-state="connecting"]{
+  color: #A9D6FF;
+  border-color: rgba(169,214,255,0.24);
+  background: rgba(169,214,255,0.10);
+}
+
+.connection-status[data-state="disconnected"]{
+  color: #FF9FAB;
+  border-color: rgba(255,159,171,0.20);
+  background: rgba(255,159,171,0.08);
 }
 
 .status-badge{
@@ -325,20 +361,28 @@ body{
   display:flex;
   align-items:center;
   justify-content:center;
-  padding: 32px 16px;
+  padding: 40px 16px;
   color: var(--muted);
   text-align:center;
 }
 
+.empty-state > div{
+  width: min(100%, 420px);
+  padding: 22px 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+  box-shadow: 0 18px 45px rgba(0,0,0,0.16);
+}
+
 .empty-state h2{
-  margin: 0 0 10px;
-  font-size: 18px;
+  margin: 0 0 8px;
+  font-size: 19px;
   color: var(--text);
 }
 
 .empty-state p{
   margin: 0;
-  max-width: 320px;
   line-height: 1.5;
 }
 
@@ -348,7 +392,8 @@ body{
   gap: 8px;
   padding: 10px;
   border-top: 1px solid var(--border);
-  background: var(--panel);
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.04));
+  box-shadow: 0 -12px 30px rgba(0,0,0,0.12);
   flex-wrap: wrap;
 }
 
@@ -970,7 +1015,8 @@ body{
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  font-size: 20px;
+  font-size: 18px;
+  line-height: 1;
   cursor:pointer;
 }
 

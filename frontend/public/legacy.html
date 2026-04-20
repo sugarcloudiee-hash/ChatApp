@@ -88,7 +88,10 @@
             </div>
           </div>
 
-          <p class="overlay-note">Need another account? Use the Change button later to sign out and switch users.</p>
+          <p class="overlay-note">Need another account? Sign out and switch users anytime.</p>
+          <div class="overlay-actions">
+            <button id="overlaySignOutBtn" class="btn ghost" type="button">Sign out</button>
+          </div>
         </section>
       </div>
     </div>
@@ -111,7 +114,7 @@
           <span id="meLabel" class="me-label"></span>
           <span id="hostBadge" class="status-badge hidden">Host</span>
           <span id="memberBadge" class="status-badge hidden"></span>
-          <button id="changeUserBtn" class="btn ghost small" type="button">Change</button>
+          <button id="changeUserBtn" class="btn ghost small" type="button">Sign out</button>
         </div>
       </header>
 
@@ -182,7 +185,7 @@
             <h2 id="pendingModalTitle">Pending Join Requests</h2>
             <p class="modal-subtitle">Approve or reject guests before they join your room.</p>
           </div>
-          <button id="pendingModalClose" type="button" class="modal-close" aria-label="Close pending requests">├ù</button>
+          <button id="pendingModalClose" type="button" class="modal-close" aria-label="Close pending requests">×</button>
         </div>
         <div id="pendingModalContent" class="modal-content"></div>
       </div>
