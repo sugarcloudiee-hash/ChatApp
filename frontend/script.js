@@ -18,6 +18,16 @@ const filePreview = document.getElementById("filePreview");
 const streamUrlInput = document.getElementById("streamUrlInput");
 const streamKindSelect = document.getElementById("streamKindSelect");
 const streamLoadBtn = document.getElementById("streamLoadBtn");
+const openYoutubeBtn = document.getElementById("openYoutubeBtn");
+const sourceBrowserPanel = document.getElementById("sourceBrowserPanel");
+const sourceBrowserClose = document.getElementById("sourceBrowserClose");
+const youtubeSearchInput = document.getElementById("youtubeSearchInput");
+const youtubeSearchBtn = document.getElementById("youtubeSearchBtn");
+const youtubeSearchResults = document.getElementById("youtubeSearchResults");
+const youtubeSearchStatus = document.getElementById("youtubeSearchStatus");
+const youtubeDirectUrlInput = document.getElementById("youtubeDirectUrlInput");
+const youtubeLoadBtn = document.getElementById("youtubeLoadBtn");
+const sourceBrowserBackdrop = document.querySelector("[data-close-source-browser]");
 
 const loginOverlay = document.getElementById("loginOverlay");
 const meLabel = document.getElementById("meLabel");
@@ -600,21 +610,23 @@ function loadSyncedVideo(sourceUrl, sourceTitle, sourceKind = "") {
   }
 }
 
-function startStreamFromInput() {
+function startStreamUrl(rawUrl, requestedKind = "") {
   if (!socket || !socket.connected) {
     alert("Join a room first, then start a stream.");
-    return;
+    return false;
   }
-  const rawUrl = streamUrlInput ? streamUrlInput.value.trim() : "";
+
   if (!rawUrl) {
-    showToast("Paste a stream URL first.", { type: "info" });
-    return;
+    showToast("Open the media browser or paste a stream URL first.", { type: "info" });
+    return false;
   }
+
   const normalized = normalizeUrl(rawUrl);
   if (!normalized) {
     showToast("Please provide a full URL starting with http:// or https://.", { type: "error" });
-    return;
+    return false;
   }
+
   let title = "Shared stream";
   try {
     const parsed = new URL(normalized);
@@ -622,11 +634,48 @@ function startStreamFromInput() {
   } catch {
     // Keep fallback title.
   }
-  const requestedKind = streamKindSelect ? streamKindSelect.value : "";
+
   loadSyncedVideo(normalized, title, requestedKind);
+  return true;
+}
+
+function startStreamFromInput() {
+  const rawUrl = streamUrlInput ? streamUrlInput.value.trim() : "";
+  const requestedKind = streamKindSelect ? streamKindSelect.value : "";
+  if (!startStreamUrl(rawUrl, requestedKind)) return;
   if (streamUrlInput) {
     streamUrlInput.value = "";
     streamUrlInput.focus();
+  }
+}
+
+function startStreamFromBrowser() {
+  const rawUrl = youtubeDirectUrlInput ? youtubeDirectUrlInput.value.trim() : "";
+  if (!startStreamUrl(rawUrl)) return;
+  closeSourceBrowser();
+}
+
+function openSourceBrowser() {
+  if (!sourceBrowserPanel) return;
+  sourceBrowserPanel.classList.remove("hidden");
+  sourceBrowserPanel.setAttribute("aria-hidden", "false");
+  if (youtubeSearchInput) {
+    youtubeSearchInput.focus();
+  }
+}
+
+function closeSourceBrowser() {
+  if (!sourceBrowserPanel) return;
+  sourceBrowserPanel.classList.add("hidden");
+  sourceBrowserPanel.setAttribute("aria-hidden", "true");
+  if (youtubeSearchResults) {
+    youtubeSearchResults.innerHTML = "";
+  }
+  if (youtubeSearchStatus) {
+    youtubeSearchStatus.textContent = "Search YouTube videos and play them in the app.";
+  }
+  if (youtubeDirectUrlInput) {
+    youtubeDirectUrlInput.value = "";
   }
 }
 
@@ -1537,8 +1586,23 @@ function renderMessage(msg) {
   row.appendChild(contentWrapper);
   bubble.appendChild(row);
 
+  let lastTapTime = 0;
   bubble.addEventListener("click", (event) => {
     event.stopPropagation();
+    const now = Date.now();
+    const target = event.target;
+    const ignored = target.closest(".reaction-toggle, .action-toggle, .reaction-menu, .action-menu, button, a, input, textarea, video, audio");
+    if (ignored) {
+      lastTapTime = now;
+      return;
+    }
+
+    if (now - lastTapTime < 300) {
+      if (!msg.deleted && socket?.connected) {
+        socket.emit("react_message", { id: msg.id, emoji: "❤️" });
+      }
+    }
+    lastTapTime = now;
   });
 
   return bubble;
@@ -1667,14 +1731,7 @@ function connectSocket() {
     showToast(`Waiting for ${host} to approve your entry...`, { persistent: true, type: 'info' });
     messagesEl.innerHTML = `<div style="padding: 20px; text-align: center; color: #666;">
       <p>${escapeText(message)}</p>
-      <p style="font-size: 0.9em; margin-top: 10px;">Waiting for ${escapeText(host)} to approve your entry...</p>
-    </div>`;
-  });
 
-  socket.on("join_request", ({ username: guest, display_name }) => {
-    if (!isHost) return;
-    pendingRequests.push({ username: guest, display_name });
-    showPendingRequests();
   });
 
   socket.on("join_approved", ({ username: guest }) => {
@@ -2054,6 +2111,39 @@ fileInput.addEventListener("change", async () => {
   }
   showFilePreview(file);
 });
+
+if (openYoutubeBtn) {
+  openYoutubeBtn.addEventListener("click", () => {
+    openSourceBrowser();
+  });
+}
+
+if (sourceBrowserClose) {
+  sourceBrowserClose.addEventListener("click", () => {
+    closeSourceBrowser();
+  });
+}
+
+if (sourceBrowserBackdrop) {
+  sourceBrowserBackdrop.addEventListener("click", () => {
+    closeSourceBrowser();
+  });
+}
+
+if (youtubeLoadBtn) {
+  youtubeLoadBtn.addEventListener("click", () => {
+    startStreamFromBrowser();
+  });
+}
+
+if (youtubeDirectUrlInput) {
+  youtubeDirectUrlInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      startStreamFromBrowser();
+    }
+  });
+}
 
 if (streamLoadBtn) {
   streamLoadBtn.addEventListener("click", () => {

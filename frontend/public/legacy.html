@@ -155,24 +155,74 @@
         <div id="messages" class="messages" aria-live="polite"></div>
       </main>
 
+      <aside id="profilePanel" class="profile-panel hidden" aria-label="Member profile panel">
+        <div class="profile-panel-card">
+          <div class="profile-panel-header">
+            <div>
+              <div class="profile-panel-kicker">Member profile</div>
+              <h2 id="profilePanelName">Select a member</h2>
+            </div>
+            <button id="profilePanelClose" class="btn ghost small profile-panel-close" type="button" aria-label="Close profile panel">×</button>
+          </div>
+          <div class="profile-panel-body">
+            <div id="profilePanelAvatar" class="profile-panel-avatar">?</div>
+            <div class="profile-panel-meta">
+              <div id="profilePanelHandle" class="profile-panel-handle"></div>
+              <div class="profile-panel-status-wrap">
+                <span id="profilePanelStatusDot" class="profile-status-dot"></span>
+                <span id="profilePanelStatus" class="profile-panel-status"></span>
+              </div>
+              <div id="profilePanelLastActive" class="profile-panel-last-active"></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
       <div id="filePreview" class="file-preview hidden"></div>
 
       <footer class="composer">
-        <button id="attachBtn" class="btn ghost" type="button" aria-label="Attach a file">Attach</button>
+        <div class="composer-tools">
+          <button id="attachBtn" class="btn ghost" type="button" aria-label="Attach a file">Attach</button>
+          <div class="emoji-picker-wrap">
+            <button id="emojiPickerBtn" class="btn ghost emoji-toggle" type="button" aria-label="Open emoji picker" aria-expanded="false" aria-controls="emojiPicker">😊</button>
+            <div id="emojiPicker" class="emoji-picker hidden" role="menu" aria-label="Emoji picker"></div>
+          </div>
+        </div>
         <input id="fileInput" type="file" accept="image/png,image/jpeg,image/jpg,image/gif,video/mp4,video/webm,video/ogg,audio/mpeg,audio/mp3,audio/wav,audio/ogg,audio/webm,audio/aac,audio/mp4,.m4a,.pdf,.txt" hidden />
-        <input id="messageInput" class="input grow" type="text" placeholder="Message..." autocomplete="off" aria-label="Message input" />
+        <textarea id="messageInput" class="input grow composer-input" rows="1" placeholder="Message..." autocomplete="off" aria-label="Message input"></textarea>
         <button id="sendBtn" class="btn primary" type="button" aria-label="Send message">Send</button>
-        <div class="stream-quickbar" aria-label="Start synchronized stream">
-          <input id="streamUrlInput" class="input stream-url-input" type="url" placeholder="Paste YouTube / Drive / Spotify / media URL" aria-label="Stream URL" />
-          <select id="streamKindSelect" class="input stream-kind-select" aria-label="Stream type">
-            <option value="">Auto</option>
-            <option value="video">Video</option>
-            <option value="audio">Audio</option>
-            <option value="embed">Embed</option>
-          </select>
-          <button id="streamLoadBtn" class="btn ghost" type="button" aria-label="Start synchronized stream">Start stream</button>
+        <div class="stream-quickbar" aria-label="Open media browser">
+          <button id="openYoutubeBtn" class="btn ghost stream-service-btn" type="button" aria-label="Open media browser">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M10 15.5l5.5-3.5L10 8.5v7z"></path>
+              <path d="M21 7.5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v9c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-9z" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </button>
         </div>
       </footer>
+
+      <div id="sourceBrowserPanel" class="source-browser hidden" aria-hidden="true">
+        <div class="source-browser-backdrop" data-close-source-browser></div>
+        <div class="source-browser-card" role="dialog" aria-modal="true" aria-label="Media browser">
+          <div class="source-browser-header">
+            <h2>Media browser</h2>
+            <button id="sourceBrowserClose" class="btn ghost source-browser-close" type="button" aria-label="Close">×</button>
+          </div>
+          <div class="source-browser-body">
+            <div class="youtube-browser-row">
+              <input id="youtubeSearchInput" class="input youtube-search-input" type="search" placeholder="Search YouTube" aria-label="Search YouTube" />
+              <button id="youtubeSearchBtn" class="btn ghost" type="button">Search</button>
+            </div>
+            <div id="youtubeSearchStatus" class="youtube-search-status">Search YouTube or paste any supported media URL.</div>
+            <div id="youtubeSearchResults" class="youtube-search-results"></div>
+            <div class="youtube-browser-footer">
+              <label for="youtubeDirectUrlInput">Or paste a media URL</label>
+              <input id="youtubeDirectUrlInput" class="input source-url-input" type="url" placeholder="https://example.com/video.mp4" aria-label="Media URL" />
+              <button id="youtubeLoadBtn" class="btn primary" type="button">Play in app</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div id="toastContainer" class="toast-container" aria-live="polite"></div>

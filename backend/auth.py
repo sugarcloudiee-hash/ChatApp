@@ -1,5 +1,6 @@
 from flask import g, jsonify, request
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 
 from extensions import db, supabase
 from models import User, Session
@@ -52,7 +53,19 @@ def _upsert_local_user(profile: dict) -> User:
         )
         db.session.add(user)
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        user = User.query.filter(func.lower(User.email) == email).first()
+        if user:
+            user.username = profile.get("username") or email
+            user.display_name = profile.get("display_name") or user.display_name
+            user.avatar = profile.get("avatar") or user.avatar
+            db.session.commit()
+            return user
+        raise
+
     return user
 
 

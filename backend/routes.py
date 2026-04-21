@@ -1,6 +1,9 @@
+import json
+import re
 import uuid
 from pathlib import Path
 
+import requests
 from flask import jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
@@ -62,6 +65,112 @@ def register_routes(app):
                 "original_name": original_name,
             }
         )
+
+    @app.get("/youtube-search")
+    def youtube_search():
+        query = str(request.args.get("q") or "").strip()
+        if not query:
+            return jsonify({"items": []}), 200
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        try:
+            response = requests.get(
+                "https://www.youtube.com/results",
+                params={"search_query": query},
+                headers=headers,
+                timeout=10,
+            )
+            html = response.text
+        except Exception:
+            return jsonify({"items": []}), 200
+
+        def extract_initial_data(text):
+            patterns = [r"var ytInitialData\s*=\s*", r"window\[\"ytInitialData\"\]\s*=\s*"]
+            for pattern in patterns:
+                match = re.search(pattern, text)
+                if not match:
+                    continue
+                start = match.end()
+                brace_count = 0
+                in_string = False
+                escape = False
+                for idx, ch in enumerate(text[start:], start):
+                    if ch == "\\" and not escape:
+                        escape = True
+                        continue
+                    if ch == '"' and not escape:
+                        in_string = not in_string
+                    if in_string:
+                        escape = False
+                        continue
+                    if ch == "{":
+                        brace_count += 1
+                    elif ch == "}":
+                        brace_count -= 1
+                        if brace_count == 0:
+                            return text[start:idx + 1]
+                    escape = False
+            return None
+
+        json_text = extract_initial_data(html)
+        if not json_text:
+            return jsonify({"items": []}), 200
+
+        try:
+            data = json.loads(json_text)
+        except Exception:
+            return jsonify({"items": []}), 200
+
+        def collect_videos(node, found):
+            if isinstance(node, dict):
+                if "videoRenderer" in node:
+                    found.append(node["videoRenderer"])
+                for child in node.values():
+                    collect_videos(child, found)
+            elif isinstance(node, list):
+                for child in node:
+                    collect_videos(child, found)
+
+        renderers = []
+        collect_videos(data, renderers)
+
+        items = []
+        for renderer in renderers:
+            video_id = renderer.get("videoId")
+            if not video_id:
+                continue
+            title_runs = renderer.get("title", {}).get("runs", [])
+            title = "".join([run.get("text", "") for run in title_runs])
+            thumbnails = renderer.get("thumbnail", {}).get("thumbnails", [])
+            thumbnail = thumbnails[-1].get("url") if thumbnails else ""
+            channel_runs = renderer.get("ownerText", {}).get("runs", [])
+            channel = "".join([run.get("text", "") for run in channel_runs])
+            duration = renderer.get("lengthText", {}).get("simpleText", "")
+            items.append(
+                {
+                    "id": video_id,
+                    "title": title,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "thumbnail": thumbnail,
+                    "channel": channel,
+                    "duration": duration,
+                }
+            )
+            if len(items) >= 10:
+                break
+
+        seen = set()
+        unique_items = []
+        for item in items:
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            unique_items.append(item)
+
+        return jsonify({"items": unique_items}), 200
 
     @app.get("/download/<token>")
     def download(token: str):

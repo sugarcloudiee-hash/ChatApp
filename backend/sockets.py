@@ -1,5 +1,7 @@
 import uuid
+import json
 import logging
+import time
 from flask import request
 from flask_socketio import disconnect, emit, join_room, leave_room
 
@@ -16,8 +18,9 @@ _SYNC_BROADCASTER_STARTED = False
 
 def _sync_broadcast_worker():
     # Periodically rebroadcast playback state to reduce drift between clients.
+    # For watch party feature, broadcast every 250ms to keep users synchronized.
     while True:
-        socketio.sleep(2)
+        socketio.sleep(0.25)
         for room_key in list(ROOM_IDS.keys()):
             playback_state = _get_room_playback(room_key)
             if not playback_state:
@@ -48,18 +51,73 @@ def _emit_room_snapshot(room_key: str, room_id: str | None = None, sid: str | No
         emit("video_sync_state", playback_state, room=target_room_id)
 
 
+def _get_or_create_room(room_key: str, host_username: str, requested_private: bool | None = None) -> None:
+    existing_room = Room.query.filter_by(room_key=room_key).first()
+    if existing_room:
+        ROOM_HOSTS.setdefault(room_key, existing_room.host_username or host_username)
+        ROOM_PRIVACY.setdefault(room_key, True if requested_private is None else bool(requested_private))
+        ROOM_INVITE_TOKENS.setdefault(room_key, uuid.uuid4().hex[:12])
+        ROOM_ALLOWED_USERS.setdefault(room_key, set())
+        return
+
+    ROOM_HOSTS[room_key] = host_username
+    is_private = True if requested_private is None else bool(requested_private)
+    ROOM_PRIVACY[room_key] = is_private
+    ROOM_INVITE_TOKENS[room_key] = uuid.uuid4().hex[:12]
+    ROOM_ALLOWED_USERS.setdefault(room_key, set())
+
+    room_record = Room(room_key=room_key, host_username=host_username, max_members=0)
+    db.session.add(room_record)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        existing_room = Room.query.filter_by(room_key=room_key).first()
+        if existing_room:
+            ROOM_HOSTS.setdefault(room_key, existing_room.host_username or host_username)
+            ROOM_PRIVACY.setdefault(room_key, True if requested_private is None else bool(requested_private))
+            ROOM_INVITE_TOKENS.setdefault(room_key, uuid.uuid4().hex[:12])
+            ROOM_ALLOWED_USERS.setdefault(room_key, set())
+            return
+        raise
+
+
 def _room_presence_payload(room_key: str) -> dict:
     room_id = ROOM_IDS.get(room_key)
+    members = []
+    online_count = 0
+    now = time.time()
+    for member in _present_members(room_key):
+        member_copy = dict(member)
+        is_online = bool(member_copy.get("online"))
+        last_active = float(member_copy.get("last_active") or 0.0)
+        if is_online:
+          online_count += 1
+          if last_active and now - last_active >= 60:
+              member_copy["status"] = "idle"
+          else:
+              member_copy["status"] = "online"
+        else:
+          member_copy["status"] = "offline"
+        members.append(member_copy)
     return {
-        "members": _present_members(room_key),
+        "members": members,
         "host": ROOM_HOSTS.get(room_key),
         "room_key": room_key,
         "is_private": bool(ROOM_PRIVACY.get(room_key, True)),
         "invite_token": ROOM_INVITE_TOKENS.get(room_key, ""),
         "invite_link": f"/?room={room_key}&invite={ROOM_INVITE_TOKENS.get(room_key, '')}" if ROOM_INVITE_TOKENS.get(room_key) else f"/?room={room_key}",
-        "member_count": len(ROOM_MEMBERS.get(room_key, {})),
+        "member_count": online_count,
         "room_id": room_id,
     }
+
+
+def _touch_member(room_key: str, username: str):
+    member = _get_member(room_key, username)
+    if not member:
+        return
+    member["online"] = True
+    member["last_active"] = time.time()
 
 
 def _join_member(room_key: str, room_id: str, username: str, display_name: str, avatar: str, is_host: bool):
@@ -69,6 +127,7 @@ def _join_member(room_key: str, room_id: str, username: str, display_name: str, 
         "avatar": avatar,
         "online": True,
         "is_host": is_host,
+        "last_active": time.time(),
     }
     ROOM_TYPING.setdefault(room_key, set())
 
@@ -109,15 +168,8 @@ def on_connect(auth=None):
         return False
 
     if room_key not in ROOM_HOSTS:
-        logger.info(f"Creating new room: {room_key}, Host: {username}")
-        ROOM_HOSTS[room_key] = username
-        is_private = True if requested_private is None else bool(requested_private)
-        ROOM_PRIVACY[room_key] = is_private
-        ROOM_INVITE_TOKENS[room_key] = uuid.uuid4().hex[:12]
-        ROOM_ALLOWED_USERS.setdefault(room_key, set())
-        room_record = Room(room_key=room_key, host_username=username, max_members=0)
-        db.session.add(room_record)
-        db.session.commit()
+        logger.info(f"Creating or restoring room: {room_key}, Host: {username}")
+        _get_or_create_room(room_key, username, requested_private)
 
     ROOM_ALLOWED_USERS.setdefault(room_key, set())
     ROOM_PRIVACY.setdefault(room_key, True)
@@ -179,9 +231,12 @@ def on_disconnect():
     leave_room(room_id)
     ROOM_TYPING.get(room_key, set()).discard(username)
     ROOM_PENDING.get(room_key, set()).discard(username)
+    member = _get_member(room_key, username)
+    if member:
+        member["online"] = False
+        member["last_active"] = time.time()
     members = ROOM_MEMBERS.get(room_key, {})
-    members.pop(username, None)
-    if not members:
+    if not any(bool(info.get("online")) for info in members.values()):
         ROOM_MEMBERS.pop(room_key, None)
         ROOM_TYPING.pop(room_key, None)
 
@@ -202,9 +257,12 @@ def on_leave_room():
     leave_room(room_id)
     ROOM_TYPING.get(room_key, set()).discard(username)
     ROOM_PENDING.get(room_key, set()).discard(username)
+    member = _get_member(room_key, username)
+    if member:
+        member["online"] = False
+        member["last_active"] = time.time()
     members = ROOM_MEMBERS.get(room_key, {})
-    members.pop(username, None)
-    if not members:
+    if not any(bool(info.get("online")) for info in members.values()):
         ROOM_MEMBERS.pop(room_key, None)
         ROOM_TYPING.pop(room_key, None)
 
@@ -224,11 +282,13 @@ def on_typing(data):
 
     is_typing = bool((data or {}).get("typing"))
     typing_users = ROOM_TYPING.setdefault(room_key, set())
+    _touch_member(room_key, username)
     if is_typing:
         typing_users.add(username)
     else:
         typing_users.discard(username)
 
+    emit("presence_update", _room_presence_payload(room_key), room=room_id)
     emit("typing_update", {"typing": list(typing_users)}, room=room_id)
 
 
@@ -241,9 +301,11 @@ def on_send_message(data):
         return
 
     member = _get_member(room_key, username) or {}
+    _touch_member(room_key, username)
     message = str((data or {}).get("message") or "")
     msg_type = str((data or {}).get("type") or "text")
     file_url = (data or {}).get("file_url")
+    client_message_id = str((data or {}).get("client_message_id") or "").strip()
     if msg_type not in {"text", "image", "video", "audio", "file"}:
         msg_type = "text"
 
@@ -266,7 +328,104 @@ def on_send_message(data):
     db.session.add(message_record)
     db.session.commit()
 
-    emit("receive_message", message_record.to_dict(), room=room_id)
+    payload = message_record.to_dict()
+    if client_message_id:
+        payload["client_message_id"] = client_message_id
+
+    emit("presence_update", _room_presence_payload(room_key), room=room_id)
+    emit("receive_message", payload, room=room_id, skip_sid=request.sid)
+    return payload
+
+
+@socketio.on("create_poll")
+def on_create_poll(data):
+    room_key = SID_ROOM.get(request.sid)
+    room_id = SID_ROOM_ID.get(request.sid)
+    username = SID_USERNAME.get(request.sid)
+    if not room_key or not room_id or not username:
+        return
+
+    question = str((data or {}).get("question") or "").strip()
+    options = (data or {}).get("options") or []
+    if not question or not isinstance(options, list) or len(options) < 2:
+        return
+
+    option_texts = [str(opt).strip() for opt in options if str(opt or "").strip()]
+    option_texts = [opt for opt in option_texts if opt]
+    if len(option_texts) < 2:
+        return
+
+    poll_data = {
+        "question": question,
+        "options": [{"text": text} for text in option_texts[:6]],
+        "votes": {},
+    }
+
+    message_record = Message(
+        id=uuid.uuid4().hex,
+        room_key=room_key,
+        sender_username=username,
+        display_name=_get_member(room_key, username).get("display_name", username) if _get_member(room_key, username) else username,
+        avatar=_get_member(room_key, username).get("avatar", "") if _get_member(room_key, username) else "",
+        message=json.dumps(poll_data),
+        type="poll",
+        file_url=None,
+        timestamp=_utc_timestamp(),
+        edited=False,
+        deleted=False,
+        reactions={},
+        reads={username: _utc_timestamp()},
+    )
+    from extensions import db
+    db.session.add(message_record)
+    db.session.commit()
+
+    payload = message_record.to_dict()
+    emit("receive_message", payload, room=room_id)
+    return payload
+
+
+@socketio.on("vote_poll")
+def on_vote_poll(data):
+    room_key = SID_ROOM.get(request.sid)
+    room_id = SID_ROOM_ID.get(request.sid)
+    username = SID_USERNAME.get(request.sid)
+    if not room_key or not room_id or not username:
+        return
+
+    message_id = str((data or {}).get("id") or "").strip()
+    option_text = str((data or {}).get("option") or "").strip()
+    if not message_id or not option_text:
+        return
+
+    msg_obj = _find_message(room_key, message_id)
+    if not msg_obj or msg_obj.type != "poll" or msg_obj.deleted:
+        return
+
+    try:
+        poll_data = json.loads(msg_obj.message or "{}")
+    except json.JSONDecodeError:
+        return
+
+    options = poll_data.get("options") or []
+    option_values = [opt.get("text") for opt in options if isinstance(opt, dict)]
+    if option_text not in option_values:
+        return
+
+    votes = poll_data.get("votes") or {}
+    previous_vote = votes.get(username)
+    if previous_vote == option_text:
+        return
+
+    votes[username] = option_text
+    poll_data["votes"] = votes
+    msg_obj.message = json.dumps(poll_data)
+
+    from extensions import db
+    db.session.commit()
+
+    emit("poll_updated", msg_obj.to_dict(), room=room_id)
+    return msg_obj.to_dict()
 
 
 @socketio.on("edit_message")
@@ -286,6 +445,7 @@ def on_edit_message(data):
     if not msg_obj or msg_obj.sender_username != username:
         return
 
+    _touch_member(room_key, username)
     msg_obj.message = new_text
     msg_obj.edited = True
     from extensions import db
@@ -309,6 +469,7 @@ def on_delete_message(data):
     if not msg_obj or msg_obj.sender_username != username:
         return
 
+    _touch_member(room_key, username)
     msg_obj.deleted = True
     from extensions import db
     db.session.commit()
@@ -332,6 +493,7 @@ def on_react_message(data):
     if not msg_obj:
         return
 
+    _touch_member(room_key, username)
     reactions = msg_obj.reactions or {}
     reactions[emoji] = reactions.get(emoji, 0) + 1
     msg_obj.reactions = reactions
@@ -356,6 +518,7 @@ def on_read_message(data):
     if not msg_obj:
         return
 
+    _touch_member(room_key, username)
     reads = msg_obj.reads or {}
     reads[username] = _utc_timestamp()
     msg_obj.reads = reads
@@ -489,7 +652,7 @@ def on_update_room_capacity(data):
     room_id = ROOM_IDS.get(room_key)
     emit("room_capacity_updated", {
         "max_members": None,
-        "member_count": len(ROOM_MEMBERS.get(room_key, {}))
+        "member_count": sum(1 for info in ROOM_MEMBERS.get(room_key, {}).values() if info.get("online"))
     }, room=room_id)
 
 
@@ -499,12 +662,6 @@ def on_video_sync_load(data):
     room_id = SID_ROOM_ID.get(request.sid)
     username = SID_USERNAME.get(request.sid)
     if not room_key or not room_id or not username:
-        return
-
-    # Keep playback authoritative from a single controller (room host)
-    # so all connected clients follow the same timeline.
-    if username != ROOM_HOSTS.get(room_key):
-        emit("video_sync_denied", {"reason": "Only the host can control synchronized playback."}, to=request.sid)
         return
 
     member = _get_member(room_key, username)
@@ -525,7 +682,8 @@ def on_video_sync_load(data):
         "playback_rate": 1,
         "updated_by": username,
     })
-    emit("video_sync_state", playback_state, room=room_id, skip_sid=request.sid)
+    # Broadcast to ALL users including the host for consistent watch party state
+    emit("video_sync_state", playback_state, room=room_id)
 
 
 @socketio.on("video_sync_state")
@@ -534,12 +692,6 @@ def on_video_sync_state(data):
     room_id = SID_ROOM_ID.get(request.sid)
     username = SID_USERNAME.get(request.sid)
     if not room_key or not room_id or not username:
-        return
-
-    # Keep playback authoritative from a single controller (room host)
-    # so all connected clients follow the same timeline.
-    if username != ROOM_HOSTS.get(room_key):
-        emit("video_sync_denied", {"reason": "Only the host can control synchronized playback."}, to=request.sid)
         return
 
     member = _get_member(room_key, username)

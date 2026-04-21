@@ -318,6 +318,13 @@ body{
   flex-direction:column;
   gap: 8px;
   -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.messages::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .empty-state{
@@ -345,8 +352,8 @@ body{
 .composer{
   display:flex;
   align-items:center;
-  gap: 8px;
-  padding: 10px;
+  gap: 6px;
+  padding: 6px 8px;
   border-top: 1px solid var(--border);
   background: var(--panel);
   flex-wrap: wrap;
@@ -355,19 +362,20 @@ body{
 .stream-quickbar{
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  flex: 1 1 460px;
-  min-width: 260px;
+  gap: 0;
+  flex: 0 0 auto;
+  min-width: 0;
 }
 
-.stream-url-input{
-  flex: 1;
-  min-width: 180px;
+.stream-service-btn{
+  width: 44px;
+  min-width: 44px;
+  padding: 0;
 }
 
-.stream-kind-select{
-  width: 100px;
-  flex: 0 0 100px;
+.stream-service-btn svg {
+  width: 20px;
+  height: 20px;
 }
 
 .file-hint{
@@ -1240,7 +1248,7 @@ body{
   }
   
   .bubble {
-    max-width: 80%;
+    max-width: 66%;
     gap: 6px;
     padding: 10px 12px;
   }
@@ -1323,8 +1331,8 @@ body{
   }
   
   .bubble {
-    max-width: 78%;
-    padding: 11px 14px;
+    max-width: 70%;
+    padding: 10px 12px;
     gap: 6px;
   }
   

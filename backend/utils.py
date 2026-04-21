@@ -57,7 +57,9 @@ def _get_room_id(room_key: str) -> str:
 
 
 def _cleanup_room_if_empty(room_key: str):
-    if not ROOM_MEMBERS.get(room_key) and not ROOM_PENDING.get(room_key):
+    members = ROOM_MEMBERS.get(room_key, {})
+    has_online_members = any(bool(member.get("online")) for member in members.values())
+    if not has_online_members and not ROOM_PENDING.get(room_key):
         ROOM_HOSTS.pop(room_key, None)
         ROOM_IDS.pop(room_key, None)
         ROOM_TYPING.pop(room_key, None)
