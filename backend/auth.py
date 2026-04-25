@@ -1,10 +1,17 @@
 from flask import g, jsonify, request
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
+from threading import Lock
+import time
 
 from extensions import db, supabase
 from models import User, Session
 from utils import _extract_access_token
+
+
+_TOKEN_CACHE_LOCK = Lock()
+_TOKEN_CACHE: dict[str, tuple[float, dict]] = {}
+_TOKEN_CACHE_TTL_SECONDS = 60
 
 
 def _extract_supabase_user_record(user_response) -> dict:
@@ -157,11 +164,24 @@ def _verify_supabase_token(token: str) -> dict:
     if not token:
         raise ValueError("Missing Supabase auth token")
 
+    now = time.time()
+    cached = _TOKEN_CACHE.get(token)
+    if cached and cached[0] > now:
+        return cached[1]
+
     try:
-        if hasattr(supabase.auth, "get_user"):
-            user_response = supabase.auth.get_user(token)
-        else:
-            user_response = supabase.auth.api.get_user(token)
+        # Supabase client can fail intermittently under concurrent auth checks.
+        # Serialize verification and cache for a short window to avoid transient HTTP/2 errors.
+        with _TOKEN_CACHE_LOCK:
+            now = time.time()
+            cached = _TOKEN_CACHE.get(token)
+            if cached and cached[0] > now:
+                return cached[1]
+
+            if hasattr(supabase.auth, "get_user"):
+                user_response = supabase.auth.get_user(token)
+            else:
+                user_response = supabase.auth.api.get_user(token)
     except Exception as exc:
         raise ValueError(f"Invalid Supabase auth token: {exc}") from exc
 
@@ -181,6 +201,8 @@ def _verify_supabase_token(token: str) -> dict:
         raise ValueError(f"Invalid Supabase auth token: {error}")
     if not user or not user.get("email"):
         raise ValueError("Invalid Supabase user")
+
+    _TOKEN_CACHE[token] = (time.time() + _TOKEN_CACHE_TTL_SECONDS, user)
     return user
 
 
@@ -222,6 +244,7 @@ def register_auth(app):
             "/assets/",
             "/download/",
             "/socket.io",
+            "/.well-known/",
         )
 
         if request.method == "OPTIONS":

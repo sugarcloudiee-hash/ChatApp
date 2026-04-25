@@ -1,4 +1,7 @@
-﻿const messagesEl = document.getElementById("messages");
+﻿import { createClient } from "@supabase/supabase-js";
+import { io } from "socket.io-client";
+
+const messagesEl = document.getElementById("messages");
 const presenceEl = document.getElementById("presence");
 const typingIndicator = document.getElementById("typingIndicator");
 const syncPlayerPanel = document.getElementById("syncPlayerPanel");
@@ -13,32 +16,23 @@ const chatEl = document.querySelector(".chat");
 const messageInput = document.getElementById("messageInput");
 const sendBtn = document.getElementById("sendBtn");
 const attachBtn = document.getElementById("attachBtn");
-const emojiPickerBtn = document.getElementById("emojiPickerBtn");
-const emojiPicker = document.getElementById("emojiPicker");
 const fileInput = document.getElementById("fileInput");
 const filePreview = document.getElementById("filePreview");
 const streamUrlInput = document.getElementById("streamUrlInput");
 const streamKindSelect = document.getElementById("streamKindSelect");
 const streamLoadBtn = document.getElementById("streamLoadBtn");
-const openYoutubeBtn = document.getElementById("openYoutubeBtn");
-const sourceBrowserPanel = document.getElementById("sourceBrowserPanel");
-const sourceBrowserClose = document.getElementById("sourceBrowserClose");
-const youtubeSearchInput = document.getElementById("youtubeSearchInput");
-const youtubeSearchBtn = document.getElementById("youtubeSearchBtn");
-const youtubeSearchResults = document.getElementById("youtubeSearchResults");
-const youtubeSearchStatus = document.getElementById("youtubeSearchStatus");
-const youtubeDirectUrlInput = document.getElementById("youtubeDirectUrlInput");
-const youtubeLoadBtn = document.getElementById("youtubeLoadBtn");
 
 const loginOverlay = document.getElementById("loginOverlay");
 const meLabel = document.getElementById("meLabel");
 const roomKeyLabel = document.getElementById("roomKeyLabel");
 const copyInviteBtn = document.getElementById("copyInviteBtn");
+const clearRoomBtn = document.getElementById("clearRoomBtn");
+const closeRoomBtn = document.getElementById("closeRoomBtn");
 const connectionStatus = document.getElementById("connectionStatus");
 const hostBadge = document.getElementById("hostBadge");
 const memberBadge = document.getElementById("memberBadge");
+const exitRoomBtn = document.getElementById("exitRoomBtn");
 const changeUserBtn = document.getElementById("changeUserBtn");
-const overlaySignOutBtn = document.getElementById("overlaySignOutBtn");
 const toastContainer = document.getElementById("toastContainer");
 const pendingModal = document.getElementById("pendingModal");
 const pendingModalContent = document.getElementById("pendingModalContent");
@@ -75,24 +69,33 @@ const inviteUsernameBtn = document.getElementById("inviteUsernameBtn");
 const authEmail = document.getElementById("authEmail");
 const authPassword = document.getElementById("authPassword");
 const authConfirmPassword = document.getElementById("authConfirmPassword");
-const profilePanel = document.getElementById("profilePanel");
-const profilePanelClose = document.getElementById("profilePanelClose");
-const profilePanelName = document.getElementById("profilePanelName");
-const profilePanelAvatar = document.getElementById("profilePanelAvatar");
-const profilePanelHandle = document.getElementById("profilePanelHandle");
-const profilePanelStatus = document.getElementById("profilePanelStatus");
-const profilePanelStatusDot = document.getElementById("profilePanelStatusDot");
-const profilePanelLastActive = document.getElementById("profilePanelLastActive");
 
 const REACTION_EMOJIS = ["\u2764\uFE0F", "\uD83D\uDC4D", "\uD83D\uDE02", "\uD83C\uDF89", "\uD83D\uDE2E"];
-const EMOJI_PICKER_EMOJIS = ["😊", "😂", "❤️", "👍", "🎉", "🙌", "🔥", "😍", "😎", "🤔"];
 // Use your backend Flask server URL here.
 // If you deploy the frontend separately, this should point to the backend service URL.
 // Replace the default URL below with your Render service URL if different.
-const BACKEND_BASE_URL = window.BACKEND_BASE_URL || window.location.origin;
-const SUPABASE_URL = window.SUPABASE_URL || "https://qxsatceefmktxnyxoevy.supabase.co";
-const SUPABASE_ANON_KEY = window.SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF4c2F0Y2VlZm1rdHhueXhvZXZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MDg3MzgsImV4cCI6MjA5MTM4NDczOH0._FJvDdLXA6JdKhOU3O0oK6Lfi1fcRTCAaaHsp-Ehj20";
-const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const BACKEND_BASE_URL = import.meta.env.VITE_BACKEND_BASE_URL || window.BACKEND_BASE_URL || window.location.origin;
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || window.SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || "";
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  throw new Error("Missing Supabase configuration. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.");
+}
+
+const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Sync theme from parent window (since chat runs in iframe)
+window.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'THEME_CHANGE') {
+    document.documentElement.setAttribute('data-theme', event.data.theme);
+  }
+});
+
+// Request initial theme from parent
+if (window.parent !== window) {
+  window.parent.postMessage({ type: 'THEME_REQUEST' }, '*');
+}
+
 let supabaseSession = null;
 let supabaseUser = null;
 let socket = null;
@@ -111,11 +114,85 @@ let roomInviteToken = "";
 let roomInviteLink = "";
 let currentAuthMode = "login";
 let suppressVideoSync = false;
-let isEmojiPickerOpen = false;
-let lastPresenceMembers = [];
-let currentTypingUsers = [];
-let selectedMemberUsername = "";
-const pendingMessageNodes = new Map();
+let authRequestInFlight = false;
+let authRateLimitTimer = null;
+let authRateLimitedUntil = 0;
+
+function getAuthSubmitLabel() {
+  return currentAuthMode === "signup" ? "Create account" : "Login";
+}
+
+function setAuthSubmitLoading(isLoading) {
+  if (!authSubmitBtn) return;
+  if (isLoading) {
+    authSubmitBtn.disabled = true;
+    authSubmitBtn.textContent = currentAuthMode === "signup" ? "Creating account..." : "Logging in...";
+    return;
+  }
+
+  const remainingMs = authRateLimitedUntil - Date.now();
+  if (remainingMs > 0) {
+    const remainingSeconds = Math.max(1, Math.ceil(remainingMs / 1000));
+    authSubmitBtn.disabled = true;
+    authSubmitBtn.textContent = `Try again in ${remainingSeconds}s`;
+    return;
+  }
+
+  authSubmitBtn.disabled = false;
+  authSubmitBtn.textContent = getAuthSubmitLabel();
+}
+
+function startAuthRateLimitCooldown(seconds = 60) {
+  const safeSeconds = Math.max(1, Number(seconds) || 60);
+  authRateLimitedUntil = Date.now() + (safeSeconds * 1000);
+
+  if (authRateLimitTimer) {
+    clearInterval(authRateLimitTimer);
+    authRateLimitTimer = null;
+  }
+
+  setAuthSubmitLoading(false);
+  authRateLimitTimer = setInterval(() => {
+    const remainingMs = authRateLimitedUntil - Date.now();
+    if (remainingMs <= 0) {
+      clearInterval(authRateLimitTimer);
+      authRateLimitTimer = null;
+      authRateLimitedUntil = 0;
+      if (!authRequestInFlight) {
+        setAuthSubmitLoading(false);
+      }
+      return;
+    }
+    if (!authRequestInFlight) {
+      setAuthSubmitLoading(false);
+    }
+  }, 1000);
+}
+
+function toAuthError(error, fallbackMessage) {
+  const status = Number(error?.status || 0);
+  const baseMessage = error?.message || fallbackMessage;
+
+  if (status === 429) {
+    const retryAfter = Number(
+      error?.retry_after
+      || error?.retryAfter
+      || error?.retry_after_seconds
+      || 0
+    );
+    const waitSeconds = retryAfter > 0 ? retryAfter : 60;
+    const rateLimitError = new Error(`Too many auth attempts. Please wait ${waitSeconds} seconds and try again.`);
+    rateLimitError.status = 429;
+    rateLimitError.retryAfterSeconds = waitSeconds;
+    return rateLimitError;
+  }
+
+  if (status >= 500) {
+    return new Error(`Supabase auth failed (server error). ${baseMessage} Check Supabase Auth logs and any auth-related DB triggers.`);
+  }
+
+  return new Error(baseMessage);
+}
 
 function extractFirstUrl(text) {
   const input = String(text || "").trim();
@@ -492,8 +569,7 @@ function applySyncedVideoState(state) {
       suppressVideoSync = true;
       syncAudio.playbackRate = nextRate;
       try {
-        // Increased tolerance to 0.5 seconds to avoid excessive seeking due to network latency
-        if (Math.abs(syncAudio.currentTime - nextTime) > 0.5) {
+        if (Math.abs(syncAudio.currentTime - nextTime) > 0.25) {
           syncAudio.currentTime = nextTime;
         }
       } catch (err) {
@@ -509,7 +585,7 @@ function applySyncedVideoState(state) {
       }
       window.setTimeout(() => {
         suppressVideoSync = false;
-      }, 100);
+      }, 150);
     };
 
     if (sourceChanged) {
@@ -562,8 +638,7 @@ function applySyncedVideoState(state) {
     suppressVideoSync = true;
     syncVideo.playbackRate = nextRate;
     try {
-      // Increased tolerance to 0.5 seconds to avoid excessive seeking due to network latency
-      if (Math.abs(syncVideo.currentTime - nextTime) > 0.5) {
+      if (Math.abs(syncVideo.currentTime - nextTime) > 0.25) {
         syncVideo.currentTime = nextTime;
       }
     } catch (err) {
@@ -579,7 +654,7 @@ function applySyncedVideoState(state) {
     }
     window.setTimeout(() => {
       suppressVideoSync = false;
-    }, 100);
+    }, 150);
   };
 
   if (sourceChanged) {
@@ -655,87 +730,6 @@ function startStreamFromInput() {
   if (streamUrlInput) {
     streamUrlInput.value = "";
     streamUrlInput.focus();
-  }
-}
-
-function renderYouTubeSearchStatus(text) {
-  if (youtubeSearchStatus) {
-    youtubeSearchStatus.textContent = text;
-  }
-}
-
-function renderYouTubeResults(items) {
-  if (!youtubeSearchResults) return;
-  youtubeSearchResults.innerHTML = "";
-  if (!items || items.length === 0) {
-    return;
-  }
-  items.forEach((item) => {
-    const card = document.createElement("div");
-    card.className = "youtube-result-item";
-
-    const thumb = document.createElement("img");
-    thumb.className = "youtube-result-thumbnail";
-    thumb.src = item.thumbnail || "";
-    thumb.alt = item.title || "YouTube thumbnail";
-    card.appendChild(thumb);
-
-    const info = document.createElement("div");
-    info.className = "youtube-result-info";
-    const title = document.createElement("p");
-    title.className = "youtube-result-title";
-    title.textContent = item.title || "Untitled video";
-    const meta = document.createElement("div");
-    meta.className = "youtube-result-meta";
-    meta.textContent = `${item.channel || "YouTube"}${item.duration ? ` · ${item.duration}` : ""}`;
-    info.appendChild(title);
-    info.appendChild(meta);
-    card.appendChild(info);
-
-    const action = document.createElement("button");
-    action.type = "button";
-    action.className = "btn ghost youtube-result-action";
-    action.textContent = "Play";
-    action.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (streamUrlInput) {
-        streamUrlInput.value = item.url;
-      }
-      startStreamFromInput();
-      closeSourceBrowser();
-    });
-    card.appendChild(action);
-
-    youtubeSearchResults.appendChild(card);
-  });
-}
-
-async function searchAndRenderYouTube() {
-  if (!youtubeSearchInput) return;
-  const query = youtubeSearchInput.value.trim();
-  if (!query) {
-    renderYouTubeSearchStatus("Enter a search term to find YouTube videos.");
-    renderYouTubeResults([]);
-    return;
-  }
-  renderYouTubeSearchStatus("Searching YouTube...");
-  renderYouTubeResults([]);
-  try {
-    const response = await apiFetch(`/youtube-search?${new URLSearchParams({ q: query }).toString()}`);
-    if (!response.ok) {
-      throw new Error("Search failed");
-    }
-    const data = await response.json();
-    const items = Array.isArray(data.items) ? data.items : [];
-    if (items.length === 0) {
-      renderYouTubeSearchStatus("No results found. Try a different search.");
-      return;
-    }
-    renderYouTubeSearchStatus(`Showing ${items.length} results. Click Play to open in the app.`);
-    renderYouTubeResults(items);
-  } catch (err) {
-    console.warn(err);
-    renderYouTubeSearchStatus("Unable to search YouTube right now. Try again later.");
   }
 }
 
@@ -838,7 +832,7 @@ async function restoreAuth() {
 async function signInWithEmail(email, password) {
   const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if (error) {
-    throw new Error(error.message || "Unable to log in.");
+    throw toAuthError(error, "Unable to log in.");
   }
   if (!data?.session?.user) {
     throw new Error("Login failed, please retry.");
@@ -850,10 +844,10 @@ async function signInWithEmail(email, password) {
 async function signUpWithEmail(email, password) {
   const { data, error } = await supabaseClient.auth.signUp({ email, password });
   if (error) {
-    throw new Error(error.message || "Unable to create account.");
+    throw toAuthError(error, "Unable to create account.");
   }
   if (!data?.session?.user) {
-    throw new Error("Sign-up succeeded. Check your email to verify, then log in.");
+    return null;
   }
   setAuthState(data.session.user, data.session);
   return data.session;
@@ -876,19 +870,6 @@ async function authenticate(mode = "login") {
 
 function getAuthorizationHeader() {
   return supabaseSession?.access_token ? `Bearer ${supabaseSession.access_token}` : "";
-}
-
-function apiFetch(path, options = {}) {
-  const headers = { ...(options.headers || {}) };
-  const authHeader = getAuthorizationHeader();
-  if (authHeader) {
-    headers.Authorization = authHeader;
-  }
-
-  return fetch(`${BACKEND_BASE_URL}${path}`, {
-    ...options,
-    headers,
-  });
 }
 
 function formatTime(iso) {
@@ -951,139 +932,25 @@ function avatarColor(name) {
   return `hsl(${hash || 200}deg 75% 55%)`;
 }
 
-function getMemberStatus(member) {
-  if (!member) return "offline";
-  if (member.status) return String(member.status).toLowerCase();
-  if (!member.online) return "offline";
-  const lastActive = Number(member.last_active || 0);
-  if (lastActive && Date.now() - lastActive * 1000 >= 60000) return "idle";
-  return "online";
-}
-
-function getMemberStatusLabel(member) {
-  const status = getMemberStatus(member);
-  if (status === "idle") return "Idle";
-  if (status === "offline") return "Offline";
-  return "Online";
-}
-
-function getMemberStatusClass(member) {
-  const status = getMemberStatus(member);
-  return status === "idle" ? "idle" : status === "offline" ? "offline" : "online";
-}
-
-function formatMemberActivity(member) {
-  const status = getMemberStatus(member);
-  if (status === "offline") {
-    const lastActive = Number(member?.last_active || 0);
-    if (!lastActive) return "Last seen recently";
-    const deltaMs = Math.max(0, Date.now() - lastActive * 1000);
-    const minutes = Math.floor(deltaMs / 60000);
-    if (minutes <= 0) return "Last seen just now";
-    if (minutes < 60) return `Last seen ${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    return `Last seen ${hours}h ago`;
-  }
-  const lastActive = Number(member?.last_active || 0);
-  if (!lastActive) return "Active now";
-  const deltaMs = Math.max(0, Date.now() - lastActive * 1000);
-  const minutes = Math.floor(deltaMs / 60000);
-  if (minutes < 1) return "Active now";
-  if (minutes < 5) return `Active ${minutes}m ago`;
-  return `Active within ${minutes}m`;
-}
-
-function getSelectedMember() {
-  return lastPresenceMembers.find((member) => member.username === selectedMemberUsername) || null;
-}
-
-function renderSelectedMember(member) {
-  if (!profilePanel || !profilePanelName || !profilePanelAvatar || !profilePanelHandle || !profilePanelStatus || !profilePanelStatusDot || !profilePanelLastActive) {
-    return;
-  }
-
-  if (!member) {
-    profilePanelName.textContent = "Select a member";
-    profilePanelAvatar.textContent = "?";
-    profilePanelAvatar.style.background = "linear-gradient(135deg, rgba(47,107,255,0.92), rgba(25,140,99,0.9))";
-    profilePanelHandle.textContent = "";
-    profilePanelStatus.textContent = "Click a member to view their mini profile.";
-    profilePanelLastActive.textContent = "";
-    profilePanelStatusDot.className = "profile-status-dot offline";
-    return;
-  }
-
-  const statusClass = getMemberStatusClass(member);
-  const statusLabel = getMemberStatusLabel(member);
-  profilePanelName.textContent = member.display_name || member.username;
-  profilePanelAvatar.textContent = escapeText(member.avatar || avatarForName(member.display_name || member.username));
-  profilePanelAvatar.style.background = `linear-gradient(135deg, ${avatarColor(member.username)}, rgba(25,140,99,0.9))`;
-  profilePanelHandle.textContent = `@${member.username}`;
-  profilePanelStatus.textContent = statusLabel;
-  profilePanelStatusDot.className = `profile-status-dot ${statusClass}`;
-  profilePanelLastActive.textContent = formatMemberActivity(member);
-}
-
-function openMemberProfile(member) {
-  if (!profilePanel) return;
-  selectedMemberUsername = member?.username || "";
-  renderSelectedMember(member || getSelectedMember());
-  profilePanel.classList.remove("hidden");
-}
-
-function closeMemberProfile() {
-  if (!profilePanel) return;
-  selectedMemberUsername = "";
-  profilePanel.classList.add("hidden");
-}
-
 function getMessageNode(messageId) {
   return Array.from(messagesEl.children).find((node) => node.dataset.id === messageId);
 }
 
 function renderPresence(members) {
-  lastPresenceMembers = Array.isArray(members) ? members.slice() : [];
   presenceEl.innerHTML = "";
-  if (!lastPresenceMembers || lastPresenceMembers.length === 0) {
+  if (!members || members.length === 0) {
     presenceEl.innerHTML = '<span style="color: var(--muted); font-size: 12px;">No one else is online yet.</span>';
-    if (selectedMemberUsername) {
-      const selected = getSelectedMember();
-      if (selected) renderSelectedMember(selected);
-    }
     return;
   }
 
-  const sortedMembers = lastPresenceMembers.slice().sort((left, right) => {
-    const leftStatus = getMemberStatus(left);
-    const rightStatus = getMemberStatus(right);
-    if (leftStatus === rightStatus) {
-      return String(left.display_name || left.username).localeCompare(String(right.display_name || right.username));
-    }
-    if (leftStatus === "offline") return 1;
-    if (rightStatus === "offline") return -1;
-    if (leftStatus === "idle" && rightStatus === "online") return 1;
-    if (leftStatus === "online" && rightStatus === "idle") return -1;
-    return 0;
-  });
-
-  sortedMembers.forEach((member) => {
+  members.forEach((member) => {
     const isHostMarked = member.is_host;
-    const statusClass = getMemberStatusClass(member);
-    const pill = document.createElement("button");
-    pill.type = "button";
-    pill.className = `member-pill ${statusClass} ${member.username === username ? 'is-self' : ''}`;
-    pill.setAttribute("aria-label", `View profile for ${member.display_name || member.username}`);
+    const pill = document.createElement("span");
+    pill.className = "member-pill";
     pill.innerHTML = `
-      <span class="member-pill-inner">
-        <span class="avatar-pill" style="background:${avatarColor(member.username)}">${escapeText(member.avatar || avatarForName(member.display_name || member.username))}</span>
-        <span class="member-pill-text">
-          <span class="member-status-dot ${statusClass}" aria-hidden="true"></span>
-          <span class="member-pill-name">${escapeText(member.display_name || member.username)}${isHostMarked ? ' <span style="font-size: 14px;">≡ƒææ</span>' : ''}</span>
-        </span>
-        ${currentTypingUsers.includes(member.username) ? '<span class="typing-chip">Typing...</span>' : ''}
-      </span>
+      <span class="avatar-pill" style="background:${avatarColor(member.username)}">${escapeText(member.avatar || avatarForName(member.display_name || member.username))}</span>
+      <span>${escapeText(member.display_name || member.username)}${isHostMarked ? " (Host)" : ""}</span>
     `;
-    pill.addEventListener("click", () => openMemberProfile(member));
     presenceEl.appendChild(pill);
   });
   
@@ -1105,93 +972,18 @@ function renderPresence(members) {
 }
 
 function renderTyping(users) {
-  currentTypingUsers = (users || []).filter((name) => name !== username);
-  const others = currentTypingUsers;
+  const others = (users || []).filter((name) => name !== username);
   if (others.length === 0) {
     typingIndicator.innerHTML = "";
     return;
   }
-  const text = others.length === 1 ? `${others[0]} is typing...` : `${others.join(", ")} are typing...`;
+  const text = others.length === 1 ? `${others[0]} is typing` : `${others.join(", ")} are typing`;
   typingIndicator.innerHTML = `<span>${escapeText(text)}</span><span class="typing-dots">...</span>`;
-}
-
-function getOutgoingDeliveryState(msg) {
-  const readCount = msg.reads ? Object.keys(msg.reads).length : 0;
-  if (readCount > 1) return { label: "Seen", className: "seen" };
-  return { label: "Delivered", className: "delivered" };
-}
-
-function createOutgoingMessageNode({ tempId, message, type = "text", file_url = null }) {
-  const bubble = document.createElement("div");
-  bubble.className = "bubble mine pending";
-  bubble.dataset.id = tempId;
-
-  const row = document.createElement("div");
-  row.className = "bubble-row";
-
-  const avatarEl = document.createElement("span");
-  avatarEl.className = "message-avatar";
-  avatarEl.textContent = escapeText(avatar || avatarForName(displayName || username));
-  row.appendChild(avatarEl);
-
-  const contentWrapper = document.createElement("div");
-  contentWrapper.className = "bubble-content";
-
-  const header = document.createElement("div");
-  header.className = "message-top";
-  const titleGroup = document.createElement("div");
-  titleGroup.className = "message-title";
-  const senderEl = document.createElement("span");
-  senderEl.className = "sender";
-  senderEl.textContent = "You";
-  const timeEl = document.createElement("span");
-  timeEl.className = "time";
-  timeEl.textContent = "Sending...";
-  titleGroup.append(senderEl, timeEl);
-  header.appendChild(titleGroup);
-  contentWrapper.appendChild(header);
-
-  const text = document.createElement("div");
-  text.className = "text";
-  text.textContent = message || "";
-  contentWrapper.appendChild(text);
-
-  if (file_url) {
-    const fileLink = document.createElement("a");
-    fileLink.className = "fileLink";
-    fileLink.href = file_url;
-    fileLink.target = "_blank";
-    fileLink.rel = "noreferrer";
-    fileLink.textContent = message || "Attachment";
-    contentWrapper.appendChild(fileLink);
-  }
-
-  const status = document.createElement("div");
-  status.className = "message-status sending";
-  status.innerHTML = '<span class="message-sending-spinner" aria-hidden="true"></span><span>Sending...</span>';
-  contentWrapper.appendChild(status);
-
-  row.appendChild(contentWrapper);
-  bubble.appendChild(row);
-  return bubble;
-}
-
-function markOutgoingMessageDelivered(tempId, serverMessage) {
-  const pendingNode = pendingMessageNodes.get(tempId);
-  if (!pendingNode) return;
-  const renderedNode = renderMessage(serverMessage);
-  pendingNode.replaceWith(renderedNode);
-  pendingMessageNodes.delete(tempId);
 }
 
 function setConnectionStatus(status) {
   connectionStatus.textContent = status;
-  const normalized = String(status || '').toLowerCase();
-  connectionStatus.dataset.state = normalized.includes('connected')
-    ? 'connected'
-    : normalized.includes('connecting')
-      ? 'connecting'
-      : 'disconnected';
+  connectionStatus.style.color = status === 'Connected' ? '#7EE787' : status === 'Connecting...' ? '#A9D6FF' : '#FF9FAB';
 }
 
 function showEmptyState() {
@@ -1199,10 +991,45 @@ function showEmptyState() {
     <div class="empty-state">
       <div>
         <h2>No messages yet</h2>
-        <p>Say hello, attach a file, or share a stream link to get the room moving.</p>
+        <p>Send the first message to start the conversation.</p>
       </div>
     </div>
   `;
+}
+
+function resetRoomSessionState() {
+  roomKey = "";
+  roomInviteToken = "";
+  roomInviteLink = "";
+  roomMemberCount = 0;
+  isHost = false;
+  awaitingApproval = false;
+  pendingRequests = [];
+  lastMessageDate = "";
+  hideFilePreview();
+  messagesEl.innerHTML = "";
+  showEmptyState();
+  renderPresence([]);
+  renderTyping([]);
+  applySyncedVideoState(null);
+  closePendingRequestsModal();
+  clearPendingApprovalToast();
+  setControlsEnabled(false);
+}
+
+function exitRoom(shouldNotifyServer = true) {
+  if (socket) {
+    if (shouldNotifyServer && socket.connected) {
+      socket.emit("leave_room");
+    }
+    socket.disconnect();
+    socket = null;
+  }
+  resetRoomSessionState();
+  updateRoomInfo();
+  showLogin(true);
+  setOverlaySection("room");
+  setActiveTab("join");
 }
 
 function clearEmptyState() {
@@ -1290,7 +1117,7 @@ function showFilePreview(file) {
       <div class="preview-content">
         <div class="preview-details">
           <strong>${escapeText(file.name)}</strong>
-          <span>${formatFileSize(file.size)} ΓÇó ${escapeText(file.type || "Unknown type")}</span>
+          <span>${formatFileSize(file.size)} | ${escapeText(file.type || "Unknown type")}</span>
         </div>
         <div class="upload-progress hidden">
           <div class="upload-progress-bar" style="width: 0%"></div>
@@ -1347,6 +1174,9 @@ function updateRoomInfo() {
   memberBadge.classList.toggle('hidden', roomMemberCount <= 0);
   memberBadge.textContent = roomMemberCount > 0 ? `${roomMemberCount} online` : '';
   inviteByUsernameWrap.classList.toggle('hidden', !isHost || !roomKey);
+  clearRoomBtn.classList.toggle('hidden', !isHost || !roomKey);
+  closeRoomBtn.classList.toggle('hidden', !isHost || !roomKey);
+  exitRoomBtn.classList.toggle('hidden', !roomKey);
 }
 
 function setActiveTab(tab) {
@@ -1373,7 +1203,7 @@ function setAuthMode(mode) {
   authTabSignup.setAttribute("aria-selected", signup ? "true" : "false");
   confirmPasswordGroup.classList.toggle("hidden", !signup);
   authPassword.setAttribute("autocomplete", signup ? "new-password" : "current-password");
-  authSubmitBtn.textContent = signup ? "Create account" : "Login";
+  setAuthSubmitLoading(false);
   clearAuthErrors();
 }
 
@@ -1467,7 +1297,7 @@ function setRoomKey(room) {
 }
 
 async function fetchCurrentUser() {
-  const res = await apiFetch("/me");
+  const res = await fetch(`${BACKEND_BASE_URL}/me`);
   if (!res.ok) {
     throw new Error("Unable to verify current user via Supabase.");
   }
@@ -1481,7 +1311,7 @@ async function fetchCurrentUser() {
 }
 
 async function createSession() {
-  const res = await apiFetch("/session", {
+  const res = await fetch(`${BACKEND_BASE_URL}/session`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
   });
@@ -1634,71 +1464,6 @@ function sendTypingStatus() {
     isTyping = false;
     socket.emit("typing", { typing: false });
   }, 900);
-}
-
-function updateMessageInputHeight() {
-  if (!messageInput) return;
-  messageInput.style.height = "auto";
-  const maxHeight = 160;
-  const nextHeight = Math.min(messageInput.scrollHeight, maxHeight);
-  messageInput.style.height = `${nextHeight}px`;
-  messageInput.style.overflowY = messageInput.scrollHeight > maxHeight ? "auto" : "hidden";
-}
-
-function closeEmojiPicker() {
-  if (!emojiPicker || !emojiPickerBtn) return;
-  isEmojiPickerOpen = false;
-  emojiPicker.classList.add("hidden");
-  emojiPickerBtn.setAttribute("aria-expanded", "false");
-}
-
-function renderEmojiPicker() {
-  if (!emojiPicker) return;
-  emojiPicker.innerHTML = "";
-  EMOJI_PICKER_EMOJIS.forEach((emoji) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "emoji-option";
-    button.textContent = emoji;
-    button.setAttribute("aria-label", `Insert ${emoji}`);
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      insertEmoji(emoji);
-      closeEmojiPicker();
-    });
-    emojiPicker.appendChild(button);
-  });
-}
-
-function openEmojiPicker() {
-  if (!emojiPicker || !emojiPickerBtn) return;
-  isEmojiPickerOpen = true;
-  renderEmojiPicker();
-  emojiPicker.classList.remove("hidden");
-  emojiPickerBtn.setAttribute("aria-expanded", "true");
-}
-
-function toggleEmojiPicker() {
-  if (isEmojiPickerOpen) {
-    closeEmojiPicker();
-  } else {
-    openEmojiPicker();
-  }
-}
-
-function insertEmoji(emoji) {
-  if (!messageInput || !emoji) return;
-  const value = messageInput.value;
-  const start = typeof messageInput.selectionStart === "number" ? messageInput.selectionStart : value.length;
-  const end = typeof messageInput.selectionEnd === "number" ? messageInput.selectionEnd : value.length;
-  messageInput.value = `${value.slice(0, start)}${emoji}${value.slice(end)}`;
-  const caret = start + emoji.length;
-  messageInput.focus();
-  if (typeof messageInput.setSelectionRange === "function") {
-    messageInput.setSelectionRange(caret, caret);
-  }
-  updateMessageInputHeight();
-  sendTypingStatus();
 }
 
 function renderMessage(msg) {
@@ -1903,13 +1668,7 @@ function renderMessage(msg) {
   }
 
   const readCount = msg.reads ? Object.keys(msg.reads).length : 0;
-  if (mine && !msg.deleted) {
-    const deliveryState = getOutgoingDeliveryState(msg);
-    const readStatus = document.createElement("div");
-    readStatus.className = `message-status ${deliveryState.className}`;
-    readStatus.textContent = deliveryState.label;
-    contentWrapper.appendChild(readStatus);
-  } else if (readCount > 0) {
+  if (readCount > 0) {
     const readStatus = document.createElement("div");
     readStatus.className = "message-status";
     readStatus.textContent = readCount === 1 ? "Read by 1" : `Read by ${readCount}`;
@@ -1967,8 +1726,11 @@ function connectSocket() {
   if (socket) return;
   setControlsEnabled(false);
   setConnectionStatus('Connecting...');
+  const isLocalBackend = /localhost|127\.0\.0\.1/i.test(BACKEND_BASE_URL);
   socket = io(BACKEND_BASE_URL, {
-    transports: ["websocket"],
+    // On local setups keep polling transport to avoid websocket frame/proxy issues.
+    transports: isLocalBackend ? ["polling"] : ["polling", "websocket"],
+    upgrade: !isLocalBackend,
     auth: {
       access_token: supabaseSession?.access_token,
       room_key: roomKey,
@@ -1991,6 +1753,26 @@ function connectSocket() {
       return;
     }
     history.forEach((message) => appendMessage(message));
+  });
+
+  socket.on("room_history_cleared", ({ cleared_by }) => {
+    messagesEl.innerHTML = "";
+    lastMessageDate = "";
+    showEmptyState();
+    socket.emit("typing", { typing: false });
+    renderTyping([]);
+    const actor = cleared_by === username ? "You" : cleared_by;
+    showToast(`${actor} cleared room view. Previous messages are hidden.`, { type: "info", duration: 4000 });
+  });
+
+  socket.on("clear_room_denied", ({ reason }) => {
+    showToast(reason || "Only host can clear room view.", { type: "warning", duration: 3500 });
+  });
+
+  socket.on("room_closed", ({ reason, closed_by }) => {
+    const actor = closed_by === username ? "You" : (closed_by || "Host");
+    showToast(`${actor} closed this room. ${reason || "Everyone has been removed."}`, { type: "warning", duration: 4500 });
+    exitRoom(false);
   });
 
   socket.on("receive_message", (message) => {
@@ -2039,10 +1821,6 @@ function connectSocket() {
       roomInviteLink = new URL(invite_link, window.location.origin).toString();
     }
     renderPresence(members);
-    const selected = getSelectedMember();
-    if (selectedMemberUsername && selected) {
-      renderSelectedMember(selected);
-    }
     updateRoomInfo();
   });
 
@@ -2053,6 +1831,7 @@ function connectSocket() {
     showToast(`Waiting for ${host} to approve your entry...`, { persistent: true, type: 'info' });
     messagesEl.innerHTML = `<div style="padding: 20px; text-align: center; color: #666;">
       <p>${escapeText(message)}</p>
+      <p style="font-size: 0.9em; margin-top: 10px;">Waiting for ${escapeText(host)} to approve your entry...</p>
     </div>`;
   });
 
@@ -2112,17 +1891,10 @@ function connectSocket() {
 
   socket.on("typing_update", ({ typing }) => {
     renderTyping(typing || []);
-    renderPresence(lastPresenceMembers);
   });
 
   socket.on("video_sync_state", (state) => {
-    lastKnownServerState = state;
     applySyncedVideoState(state);
-  });
-
-  socket.on("video_sync_denied", ({ reason }) => {
-    showToast(reason || "Video sync denied", { type: "warning" });
-    console.warn("Video sync denied:", reason);
   });
 
   socket.on("connect_error", (err) => {
@@ -2138,7 +1910,6 @@ function connectSocket() {
   socket.on("disconnect", () => {
     setControlsEnabled(false);
     setConnectionStatus('Disconnected');
-    currentTypingUsers = [];
     isHost = false;
     awaitingApproval = false;
     pendingRequests = [];
@@ -2146,7 +1917,6 @@ function connectSocket() {
     closePendingRequestsModal();
     clearPendingApprovalToast();
     applySyncedVideoState(null);
-    renderPresence(lastPresenceMembers);
   });
 }
 
@@ -2201,31 +1971,12 @@ async function sendTextMessage() {
   }
   const text = messageInput.value.trim();
   if (!text) return;
-  const tempId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const pendingNode = createOutgoingMessageNode({ tempId, message: text, type: "text" });
-  pendingMessageNodes.set(tempId, pendingNode);
-  clearEmptyState();
-  messagesEl.appendChild(pendingNode);
-  scrollToBottom();
   socket.emit("send_message", {
     message: text,
     type: "text",
     file_url: null,
-    client_message_id: tempId,
-  }, (ack) => {
-    if (!ack || ack.error) {
-      pendingNode.remove();
-      pendingMessageNodes.delete(tempId);
-      alert((ack && ack.error) || "Message send failed.");
-      return;
-    }
-    markOutgoingMessageDelivered(tempId, ack);
-    scrollToBottom();
   });
   messageInput.value = "";
-  updateMessageInputHeight();
-  closeEmojiPicker();
-  resetTyping();
   messageInput.focus();
 }
 
@@ -2239,26 +1990,10 @@ async function sendFileMessage(file) {
   try {
     const type = detectType(file);
     const uploaded = await uploadFile(file);
-    const tempId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const pendingNode = createOutgoingMessageNode({ tempId, message: file.name, type, file_url: uploaded.file_url });
-    pendingMessageNodes.set(tempId, pendingNode);
-    clearEmptyState();
-    messagesEl.appendChild(pendingNode);
-    scrollToBottom();
     socket.emit("send_message", {
       message: file.name,
       type,
       file_url: uploaded.file_url,
-      client_message_id: tempId,
-    }, (ack) => {
-      if (!ack || ack.error) {
-        pendingNode.remove();
-        pendingMessageNodes.delete(tempId);
-        alert((ack && ack.error) || "Message send failed.");
-        return;
-      }
-      markOutgoingMessageDelivered(tempId, ack);
-      scrollToBottom();
     });
   } finally {
     sendBtn.disabled = false;
@@ -2276,12 +2011,35 @@ authTabSignup.addEventListener("click", () => {
 });
 
 authSubmitBtn.addEventListener("click", async () => {
+  if (authRequestInFlight) {
+    return;
+  }
+
+  if (Date.now() < authRateLimitedUntil) {
+    const remainingSeconds = Math.max(1, Math.ceil((authRateLimitedUntil - Date.now()) / 1000));
+    showToast(`Please wait ${remainingSeconds} seconds before trying again.`, { type: "warning", duration: 4500 });
+    return;
+  }
+
+  authRequestInFlight = true;
+  setAuthSubmitLoading(true);
   try {
-    await authenticate(currentAuthMode);
+    const session = await authenticate(currentAuthMode);
+    if (!session && currentAuthMode === "signup") {
+      setAuthMode("login");
+      showToast("Sign-up succeeded. Check your email to verify, then log in.", { type: "info", duration: 5500 });
+      return;
+    }
     setOverlaySection("room");
     updateRoomInfo();
   } catch (err) {
+    if (Number(err?.status || 0) === 429) {
+      startAuthRateLimitCooldown(Number(err.retryAfterSeconds || 60));
+    }
     alert(err.message || "Authentication failed.");
+  } finally {
+    authRequestInFlight = false;
+    setAuthSubmitLoading(false);
   }
 });
 
@@ -2345,7 +2103,7 @@ createSubmitBtn.addEventListener("click", async () => {
     updateRoomInfo();
     connectSocket();
   } catch (err) {
-    alert(err.message || "Failed to authenticate");
+    alert(err.message || "Failed to create room");
   }
 });
 
@@ -2403,6 +2161,40 @@ copyInviteBtn.addEventListener("click", async () => {
   }
 });
 
+clearRoomBtn.addEventListener("click", () => {
+  if (!socket || !socket.connected) {
+    showToast("Connect to a room first.", { type: "warning", duration: 3000 });
+    return;
+  }
+  if (!isHost) {
+    showToast("Only host can clear room view.", { type: "warning", duration: 3000 });
+    return;
+  }
+  const ok = confirm("Clear room view for everyone? Old messages stay stored but won't show again.");
+  if (!ok) return;
+  socket.emit("clear_room_view");
+});
+
+closeRoomBtn.addEventListener("click", () => {
+  if (!socket || !socket.connected) {
+    showToast("Connect to a room first.", { type: "warning", duration: 3000 });
+    return;
+  }
+  if (!isHost) {
+    showToast("Only host can close the room.", { type: "warning", duration: 3000 });
+    return;
+  }
+  const ok = confirm("Close this room for everyone now?");
+  if (!ok) return;
+  socket.emit("close_room", { reason: "Host closed the room." });
+});
+
+exitRoomBtn.addEventListener("click", () => {
+  const ok = confirm("Exit this room now?");
+  if (!ok) return;
+  exitRoom();
+});
+
 inviteUsernameBtn.addEventListener("click", () => {
   const target = inviteUsernameInput.value.trim().toLowerCase();
   if (!target) {
@@ -2425,10 +2217,9 @@ document.addEventListener("click", () => {
   document.querySelectorAll('.reaction-menu.visible, .action-menu.visible').forEach((el) => {
     el.classList.remove('visible');
   });
-  closeEmojiPicker();
 });
 
-async function handleSignOut() {
+changeUserBtn.addEventListener("click", async () => {
   try {
     await supabaseClient.auth.signOut();
   } catch (err) {
@@ -2436,74 +2227,28 @@ async function handleSignOut() {
   }
   username = "";
   displayName = "";
-  roomKey = "";
   avatar = "";
-  roomInviteToken = "";
-  roomInviteLink = "";
   roomIsPrivate = true;
   supabaseSession = null;
   supabaseUser = null;
-  isHost = false;
-  awaitingApproval = false;
-  pendingRequests = [];
-  lastMessageDate = "";
-  closePendingRequestsModal();
-  if (socket) {
-    socket.disconnect();
-    socket = null;
-  }
-  currentTypingUsers = [];
-  lastPresenceMembers = [];
-  selectedMemberUsername = "";
-  closeMemberProfile();
+  exitRoom();
   updateRoomInfo();
-  showLogin(true);
-}
-
-changeUserBtn.addEventListener("click", handleSignOut);
-if (overlaySignOutBtn) {
-  overlaySignOutBtn.addEventListener("click", handleSignOut);
-}
+  setOverlaySection("auth");
+});
 
 sendBtn.addEventListener("click", async () => {
   await sendTextMessage();
 });
 
-if (emojiPickerBtn) {
-  emojiPickerBtn.addEventListener("click", (event) => {
-    event.stopPropagation();
-    toggleEmojiPicker();
-  });
-}
-
-if (emojiPicker) {
-  emojiPicker.addEventListener("click", (event) => {
-    event.stopPropagation();
-  });
-}
-
-if (profilePanelClose) {
-  profilePanelClose.addEventListener("click", closeMemberProfile);
-}
-
 messageInput.addEventListener("input", () => {
-  updateMessageInputHeight();
   sendTypingStatus();
 });
 
 messageInput.addEventListener("keydown", async (event) => {
-  if (event.key === "Escape") {
-    closeEmojiPicker();
-    return;
-  }
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     await sendTextMessage();
   }
-});
-
-messageInput.addEventListener("blur", () => {
-  resetTyping();
 });
 
 attachBtn.addEventListener("click", () => fileInput.click());
@@ -2526,68 +2271,6 @@ if (streamLoadBtn) {
   });
 }
 
-function openSourceBrowser() {
-  if (!sourceBrowserPanel) return;
-  sourceBrowserPanel.classList.remove("hidden");
-  if (youtubeSearchInput) {
-    youtubeSearchInput.value = streamUrlInput?.value || "";
-    youtubeSearchInput.focus();
-  }
-  renderYouTubeSearchStatus("Search YouTube videos and play them in the app.");
-  renderYouTubeResults([]);
-}
-
-function closeSourceBrowser() {
-  if (!sourceBrowserPanel) return;
-  sourceBrowserPanel.classList.add("hidden");
-}
-
-if (openYoutubeBtn) {
-  openYoutubeBtn.addEventListener("click", () => {
-    openSourceBrowser();
-  });
-}
-
-if (sourceBrowserClose) {
-  sourceBrowserClose.addEventListener("click", closeSourceBrowser);
-}
-
-const sourceBrowserBackdrop = document.querySelector(".source-browser-backdrop[data-close-source-browser]");
-if (sourceBrowserBackdrop) {
-  sourceBrowserBackdrop.addEventListener("click", closeSourceBrowser);
-}
-
-if (youtubeSearchBtn) {
-  youtubeSearchBtn.addEventListener("click", () => {
-    searchAndRenderYouTube();
-  });
-}
-
-if (youtubeSearchInput) {
-  youtubeSearchInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      searchAndRenderYouTube();
-    }
-  });
-}
-
-if (youtubeLoadBtn) {
-  youtubeLoadBtn.addEventListener("click", () => {
-    if (!youtubeDirectUrlInput) return;
-    const url = youtubeDirectUrlInput.value.trim();
-    if (!url) {
-      showToast("Paste a YouTube link before playing.", { type: "info" });
-      return;
-    }
-    if (streamUrlInput) {
-      streamUrlInput.value = url;
-    }
-    startStreamFromInput();
-    closeSourceBrowser();
-  });
-}
-
 if (streamUrlInput) {
   streamUrlInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -2596,70 +2279,6 @@ if (streamUrlInput) {
     }
   });
 }
-
-updateMessageInputHeight();
-renderEmojiPicker();
-
-// Continuous sync monitor: keep video/audio playback synchronized with server state
-let lastSyncRequestTime = 0;
-let lastKnownServerState = null;
-
-window.setInterval(() => {
-  if (lastPresenceMembers.length) {
-    renderPresence(lastPresenceMembers);
-  }
-  if (profilePanel && !profilePanel.classList.contains("hidden")) {
-    renderSelectedMember(getSelectedMember());
-  }
-}, 15000);
-
-// Watch party sync: continuously monitor and correct playback drift every 250ms
-window.setInterval(() => {
-  if (!socket || !socket.connected || !lastKnownServerState) return;
-  if (suppressVideoSync) return;
-  
-  const activeElement = syncVideo && !syncVideo.classList.contains("hidden") ? syncVideo : 
-                        syncAudio && !syncAudio.classList.contains("hidden") ? syncAudio : null;
-  
-  if (!activeElement) return;
-  
-  try {
-    const serverState = lastKnownServerState;
-    const timeDiff = Math.abs(activeElement.currentTime - (serverState.position || 0));
-    const playingMismatch = Boolean(activeElement.paused) !== !serverState.playing;
-    const rateDiff = Math.abs(activeElement.playbackRate - (serverState.playback_rate || 1));
-    
-    // Sync if: time drift > 0.5s OR play/pause state mismatch OR playback rate mismatch
-    if (timeDiff > 0.5 || playingMismatch || (Math.abs(rateDiff) > 0.01)) {
-      suppressVideoSync = true;
-      
-      if (rateDiff > 0.01) {
-        activeElement.playbackRate = serverState.playback_rate || 1;
-      }
-      
-      if (timeDiff > 0.5) {
-        activeElement.currentTime = serverState.position || 0;
-      }
-      
-      if (playingMismatch) {
-        if (serverState.playing) {
-          const playPromise = activeElement.play();
-          if (playPromise && typeof playPromise.catch === "function") {
-            playPromise.catch(() => {});
-          }
-        } else {
-          activeElement.pause();
-        }
-      }
-      
-      window.setTimeout(() => {
-        suppressVideoSync = false;
-      }, 100);
-    }
-  } catch (err) {
-    console.warn("Watch party sync error:", err);
-  }
-}, 250);
 
 if (syncVideo) {
   syncVideo.addEventListener("play", () => {

@@ -11,10 +11,13 @@ from routes import register_routes
 import sockets  # noqa: F401  # Register Socket.IO event handlers
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+logging.getLogger('hpack').setLevel(logging.WARNING)
 logger.info("Backend application starting up...")
 
 app = Flask(
@@ -36,7 +39,7 @@ register_routes(app)
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization,X-Session-Token,X-Room-Key"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
     response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
 

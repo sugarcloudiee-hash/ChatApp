@@ -36,8 +36,13 @@ def _extract_room_key() -> str:
 def _extract_access_token() -> str:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.lower().startswith("bearer "):
-        return auth_header[7:].strip()
-    return (request.args.get("access_token") or "").strip()
+        token = auth_header[7:].strip()
+        print(f"[TOKEN] Extracted from Authorization header: {token[:20]}...")
+        return token
+    token = (request.args.get("access_token") or "").strip()
+    if token:
+        print(f"[TOKEN] Extracted from query param: {token[:20]}...")
+    return token
 
 
 def _get_room_messages(room_key: str) -> list[dict]:

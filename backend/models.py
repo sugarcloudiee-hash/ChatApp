@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from extensions import db
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, UniqueConstraint
 
 
 class User(db.Model):
@@ -84,4 +84,84 @@ class Message(db.Model):
             "deleted": self.deleted,
             "reactions": self.reactions or {},
             "reads": self.reads or {},
+        }
+
+
+class FriendRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    sender_username = db.Column(db.String(64), nullable=False, index=True)
+    receiver_username = db.Column(db.String(64), nullable=False, index=True)
+    status = db.Column(db.String(16), nullable=False, default="pending", index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    responded_at = db.Column(db.DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("sender_username", "receiver_username", name="uq_friend_request_pair_fr"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "sender_username": self.sender_username,
+            "receiver_username": self.receiver_username,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "responded_at": self.responded_at.isoformat() if self.responded_at else None,
+        }
+
+
+class Friendship(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_a = db.Column(db.String(64), nullable=False, index=True)
+    user_b = db.Column(db.String(64), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_a", "user_b", name="uq_friendship_pair_fs"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_a": self.user_a,
+            "user_b": self.user_b,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class DirectMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    sender_username = db.Column(db.String(64), nullable=False, index=True)
+    receiver_username = db.Column(db.String(64), nullable=False, index=True)
+    message = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    read_at = db.Column(db.DateTime, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "sender_username": self.sender_username,
+            "receiver_username": self.receiver_username,
+            "message": self.message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "read_at": self.read_at.isoformat() if self.read_at else None,
+        }
+
+
+class Notification(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(64), nullable=False, index=True)
+    kind = db.Column(db.String(32), nullable=False)
+    payload = db.Column(db.JSON, nullable=False, default=dict)
+    is_read = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "username": self.username,
+            "kind": self.kind,
+            "payload": self.payload or {},
+            "is_read": bool(self.is_read),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }

@@ -1,0 +1,8 @@
+flask
+flask-socketio
+flask-sqlalchemy
+python-dotenv
+PyJWT>=2.8.0
+requests>=2.31.0
+simple-websocket>=1.0.0
+supabase>=1.0.0

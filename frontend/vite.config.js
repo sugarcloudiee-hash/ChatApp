@@ -17,6 +17,7 @@ export default defineConfig({
       '/session': 'http://127.0.0.1:5050',
       '/upload': 'http://127.0.0.1:5050',
       '/download': 'http://127.0.0.1:5050',
+      '/social': 'http://127.0.0.1:5050',
     },
   },
 })

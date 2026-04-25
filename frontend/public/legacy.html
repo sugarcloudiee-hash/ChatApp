@@ -5,6 +5,25 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Realtime Chat</title>
     <link rel="stylesheet" href="/style.css" />
+    <script>
+      // THEME SYNC FROM PARENT WINDOW
+      (function() {
+        // Default to dark theme
+        document.documentElement.setAttribute('data-theme', 'dark');
+        
+        // Listen for theme changes from parent
+        window.addEventListener('message', (event) => {
+          if (event.data && event.data.type === 'THEME_CHANGE') {
+            document.documentElement.setAttribute('data-theme', event.data.theme);
+          }
+        });
+        
+        // Request initial theme from parent (if running in iframe)
+        if (window.parent !== window) {
+          window.parent.postMessage({ type: 'THEME_REQUEST' }, '*');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="loginOverlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="overlayTitle" aria-describedby="overlayDescription">

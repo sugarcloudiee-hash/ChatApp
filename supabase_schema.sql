@@ -52,6 +52,61 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS messages_room_key_idx ON messages(room_key);
 
+-- Friend requests table
+CREATE TABLE IF NOT EXISTS friend_requests (
+  id BIGSERIAL PRIMARY KEY,
+  sender_username VARCHAR(64) NOT NULL,
+  receiver_username VARCHAR(64) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  responded_at TIMESTAMPTZ,
+  CONSTRAINT uq_friend_request_pair UNIQUE (sender_username, receiver_username)
+);
+
+CREATE INDEX IF NOT EXISTS friend_requests_sender_idx ON friend_requests(sender_username);
+CREATE INDEX IF NOT EXISTS friend_requests_receiver_idx ON friend_requests(receiver_username);
+CREATE INDEX IF NOT EXISTS friend_requests_status_idx ON friend_requests(status);
+
+-- Accepted friendships table (store canonical sorted usernames in app layer)
+CREATE TABLE IF NOT EXISTS friendships (
+  id BIGSERIAL PRIMARY KEY,
+  user_a VARCHAR(64) NOT NULL,
+  user_b VARCHAR(64) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_friendship_pair UNIQUE (user_a, user_b)
+);
+
+CREATE INDEX IF NOT EXISTS friendships_user_a_idx ON friendships(user_a);
+CREATE INDEX IF NOT EXISTS friendships_user_b_idx ON friendships(user_b);
+
+-- Persistent direct messages
+CREATE TABLE IF NOT EXISTS direct_messages (
+  id BIGSERIAL PRIMARY KEY,
+  sender_username VARCHAR(64) NOT NULL,
+  receiver_username VARCHAR(64) NOT NULL,
+  message TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  read_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS direct_messages_sender_idx ON direct_messages(sender_username);
+CREATE INDEX IF NOT EXISTS direct_messages_receiver_idx ON direct_messages(receiver_username);
+CREATE INDEX IF NOT EXISTS direct_messages_created_at_idx ON direct_messages(created_at DESC);
+
+-- User notification feed (friend requests + direct message alerts)
+CREATE TABLE IF NOT EXISTS notifications (
+  id BIGSERIAL PRIMARY KEY,
+  username VARCHAR(64) NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  is_read BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS notifications_username_idx ON notifications(username);
+CREATE INDEX IF NOT EXISTS notifications_unread_idx ON notifications(username, is_read);
+CREATE INDEX IF NOT EXISTS notifications_created_at_idx ON notifications(created_at DESC);
+
 -- Helper function: upsert user by email
 CREATE OR REPLACE FUNCTION upsert_user_by_email(
   p_email VARCHAR,

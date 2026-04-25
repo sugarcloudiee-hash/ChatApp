@@ -16,6 +16,21 @@ logger = logging.getLogger(__name__)
 _SYNC_BROADCASTER_STARTED = False
 
 
+def emit_social_refresh(*usernames: str):
+    unique_usernames = {
+        str(username or "").strip().lower()
+        for username in usernames
+        if str(username or "").strip()
+    }
+    for username in unique_usernames:
+        socketio.emit(
+            "social_refresh",
+            {"username": username},
+            room=f"social:{username}",
+            namespace="/social",
+        )
+
+
 def _sync_broadcast_worker():
     # Periodically rebroadcast playback state to reduce drift between clients.
     # For watch party feature, broadcast every 250ms to keep users synchronized.
@@ -217,6 +232,24 @@ def on_connect(auth=None):
     emit("message_history", _get_room_messages(room_key))
     emit("presence_update", _room_presence_payload(room_key), room=room_id)
     _emit_room_snapshot(room_key, room_id=room_id)
+
+
+@socketio.on("connect", namespace="/social")
+def on_social_connect(auth=None):
+    try:
+        if not isinstance(auth, dict):
+            auth = {}
+        token = str(auth.get("access_token") or request.args.get("access_token") or "").strip()
+        user = _current_user(token if token else None)
+        join_room(f"social:{user.username}", sid=request.sid, namespace="/social")
+        emit("social_connected", {"ok": True, "username": user.username})
+    except Exception:
+        return False
+
+
+@socketio.on("disconnect", namespace="/social")
+def on_social_disconnect():
+    return
 
 
 @socketio.on("disconnect")
