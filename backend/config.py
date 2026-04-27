@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_SRC_DIR = (BASE_DIR / ".." / "frontend").resolve()
 FRONTEND_DIST_DIR = (FRONTEND_SRC_DIR / "dist").resolve()
-FRONTEND_DIR = FRONTEND_DIST_DIR if FRONTEND_DIST_DIR.exists() else FRONTEND_SRC_DIR
 UPLOAD_DIR = (BASE_DIR / "uploads").resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -17,6 +16,15 @@ load_dotenv((BASE_DIR / ".." / "frontend" / ".env"), override=False)
 
 APP_SECRET = os.environ.get("CHAT_KEY", "").strip() or secrets.token_urlsafe(32)
 DEBUG_MODE = os.environ.get("FLASK_DEBUG") == "1" or os.environ.get("DEBUG") == "1"
+
+if FRONTEND_DIST_DIR.exists():
+    FRONTEND_DIR = FRONTEND_DIST_DIR
+elif DEBUG_MODE:
+    FRONTEND_DIR = FRONTEND_SRC_DIR
+else:
+    raise RuntimeError(
+        "frontend/dist is missing. Build the frontend before deployment (cd frontend && npm ci && npm run build)."
+    )
 
 DB_PATH = BASE_DIR / "data.db"
 DATABASE_URI = (
