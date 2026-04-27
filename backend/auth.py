@@ -4,9 +4,9 @@ from sqlalchemy.exc import IntegrityError
 from threading import Lock
 import time
 
-from extensions import db, supabase
-from models import User, Session
-from utils import _extract_access_token
+from backend.extensions import db, supabase
+from backend.models import User, Session
+from backend.utils import _extract_access_token
 
 
 _TOKEN_CACHE_LOCK = Lock()

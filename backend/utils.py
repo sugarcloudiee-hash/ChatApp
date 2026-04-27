@@ -5,10 +5,10 @@ from pathlib import Path
 
 from flask import request
 
-from extensions import serializer
-from models import Message
-from state import ROOM_ALLOWED_USERS, ROOM_HOSTS, ROOM_IDS, ROOM_INVITE_TOKENS, ROOM_MEMBERS, ROOM_PENDING, ROOM_PLAYBACK, ROOM_PRIVACY, ROOM_TYPING
-from config import ALLOWED_EXTENSIONS, ALLOWED_MIME_TYPES
+from backend.extensions import serializer
+from backend.models import Message
+from backend.state import ROOM_ALLOWED_USERS, ROOM_HOSTS, ROOM_IDS, ROOM_INVITE_TOKENS, ROOM_MEMBERS, ROOM_PENDING, ROOM_PLAYBACK, ROOM_PRIVACY, ROOM_TYPING
+from backend.config import ALLOWED_EXTENSIONS, ALLOWED_MIME_TYPES
 
 
 def _utc_timestamp() -> str:

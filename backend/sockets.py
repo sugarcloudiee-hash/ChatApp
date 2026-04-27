@@ -5,11 +5,12 @@ import time
 from flask import request
 from flask_socketio import disconnect, emit, join_room, leave_room
 
-from auth import _current_user, find_or_sync_user_by_identifier
-from extensions import db, socketio
-from models import Message, Room, User
-from state import ROOM_ALLOWED_USERS, ROOM_HOSTS, ROOM_IDS, ROOM_INVITE_TOKENS, ROOM_MEMBERS, ROOM_PENDING, ROOM_PRIVACY, ROOM_TYPING, SID_ROOM, SID_ROOM_ID, SID_USERNAME
-from utils import _cleanup_room_if_empty, _find_message, _get_member, _get_room_id, _get_room_messages, _get_room_playback, _present_members, _set_room_playback, _utc_timestamp
+from backend.auth import _current_user, find_or_sync_user_by_identifier
+from backend.extensions import db, socketio
+from backend.models import Message, Room, User
+from backend.party_queue import add_to_queue, clear_queue, get_now_playing, get_queue, play_next, queue_snapshot, remove_from_queue, vote_track
+from backend.state import ROOM_ALLOWED_USERS, ROOM_HOSTS, ROOM_IDS, ROOM_INVITE_TOKENS, ROOM_MEMBERS, ROOM_PENDING, ROOM_PRIVACY, ROOM_TYPING, SID_ROOM, SID_ROOM_ID, SID_USERNAME
+from backend.utils import _cleanup_room_if_empty, _find_message, _get_member, _get_room_id, _get_room_messages, _get_room_playback, _present_members, _set_room_playback, _utc_timestamp
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,39 @@ def emit_social_refresh(*usernames: str):
             room=f"social:{username}",
             namespace="/social",
         )
+
+
+def _emit_queue_updated(room_key: str, room_id: str | None = None, sid: str | None = None):
+    payload = queue_snapshot(room_key)
+    if sid:
+        socketio.emit("queue_updated", payload, to=sid)
+        return
+
+    target_room = room_id or ROOM_IDS.get(room_key)
+    if target_room:
+        socketio.emit("queue_updated", payload, room=target_room)
+
+
+def _emit_play_track(room_key: str, track: dict | None, room_id: str | None = None, sid: str | None = None):
+    payload = {
+        "event": "play_track",
+        "track": track,
+        "start_time": int(time.time() * 1000),
+    }
+    if sid:
+        socketio.emit("play_track", payload, to=sid)
+        return
+
+    target_room = room_id or ROOM_IDS.get(room_key)
+    if target_room:
+        socketio.emit("play_track", payload, room=target_room)
+
+
+def _play_next_and_emit(room_key: str, room_id: str | None = None):
+    next_track = play_next(room_key)
+    _emit_queue_updated(room_key, room_id=room_id)
+    _emit_play_track(room_key, next_track, room_id=room_id)
+    return next_track
 
 
 def _sync_broadcast_worker():
@@ -209,6 +243,8 @@ def on_connect(auth=None):
             _join_member(room_key, room_id, username, display_name, avatar, False)
             emit("message_history", _get_room_messages(room_key), to=request_sid)
             _emit_room_snapshot(room_key, sid=request_sid)
+            _emit_queue_updated(room_key, sid=request_sid)
+            _emit_play_track(room_key, get_now_playing(room_key), sid=request_sid)
             emit("presence_update", _room_presence_payload(room_key), room=room_id)
             return
 
@@ -232,6 +268,8 @@ def on_connect(auth=None):
     emit("message_history", _get_room_messages(room_key))
     emit("presence_update", _room_presence_payload(room_key), room=room_id)
     _emit_room_snapshot(room_key, room_id=room_id)
+    _emit_queue_updated(room_key, room_id=room_id)
+    _emit_play_track(room_key, get_now_playing(room_key), room_id=room_id)
 
 
 @socketio.on("connect", namespace="/social")
@@ -357,7 +395,7 @@ def on_send_message(data):
         reactions={},
         reads={username: _utc_timestamp()},
     )
-    from extensions import db
+    from backend.extensions import db
     db.session.add(message_record)
     db.session.commit()
 
@@ -409,7 +447,7 @@ def on_create_poll(data):
         reactions={},
         reads={username: _utc_timestamp()},
     )
-    from extensions import db
+    from backend.extensions import db
     db.session.add(message_record)
     db.session.commit()
 
@@ -454,7 +492,7 @@ def on_vote_poll(data):
     poll_data["votes"] = votes
     msg_obj.message = json.dumps(poll_data)
 
-    from extensions import db
+    from backend.extensions import db
     db.session.commit()
 
     emit("poll_updated", msg_obj.to_dict(), room=room_id)
@@ -481,7 +519,7 @@ def on_edit_message(data):
     _touch_member(room_key, username)
     msg_obj.message = new_text
     msg_obj.edited = True
-    from extensions import db
+    from backend.extensions import db
     db.session.commit()
     emit("message_edited", msg_obj.to_dict(), room=room_id)
 
@@ -504,7 +542,7 @@ def on_delete_message(data):
 
     _touch_member(room_key, username)
     msg_obj.deleted = True
-    from extensions import db
+    from backend.extensions import db
     db.session.commit()
     emit("message_deleted", msg_obj.to_dict(), room=room_id)
 
@@ -530,7 +568,7 @@ def on_react_message(data):
     reactions = msg_obj.reactions or {}
     reactions[emoji] = reactions.get(emoji, 0) + 1
     msg_obj.reactions = reactions
-    from extensions import db
+    from backend.extensions import db
     db.session.commit()
     emit("message_reaction", msg_obj.to_dict(), room=room_id)
 
@@ -555,7 +593,7 @@ def on_read_message(data):
     reads = msg_obj.reads or {}
     reads[username] = _utc_timestamp()
     msg_obj.reads = reads
-    from extensions import db
+    from backend.extensions import db
     db.session.commit()
     emit("read_receipt", msg_obj.to_dict(), room=room_id)
 
@@ -591,6 +629,8 @@ def on_approve_join(data):
         if u == username and SID_ROOM.get(sid) == room_key:
             socketio.emit("message_history", _get_room_messages(room_key), to=sid)
             _emit_room_snapshot(room_key, sid=sid)
+            _emit_queue_updated(room_key, sid=sid)
+            _emit_play_track(room_key, get_now_playing(room_key), sid=sid)
 
     emit("join_approved", {"username": username}, room=room_id)
     emit("presence_update", _room_presence_payload(room_key), room=room_id)
@@ -666,6 +706,8 @@ def on_invite_user(data):
                 if online_user == invitee and SID_ROOM.get(sid) == room_key:
                     socketio.emit("message_history", _get_room_messages(room_key), to=sid)
                     _emit_room_snapshot(room_key, sid=sid)
+                    _emit_queue_updated(room_key, sid=sid)
+                    _emit_play_track(room_key, get_now_playing(room_key), sid=sid)
             emit("join_approved", {"username": invitee}, room=room_id)
             emit("presence_update", _room_presence_payload(room_key), room=room_id)
 
@@ -687,6 +729,109 @@ def on_update_room_capacity(data):
         "max_members": None,
         "member_count": sum(1 for info in ROOM_MEMBERS.get(room_key, {}).values() if info.get("online"))
     }, room=room_id)
+
+
+@socketio.on("add_to_queue")
+def on_add_to_queue(data):
+    room_key = SID_ROOM.get(request.sid)
+    room_id = SID_ROOM_ID.get(request.sid)
+    username = SID_USERNAME.get(request.sid)
+    if not room_key or not room_id or not username:
+        return
+
+    raw_track = (data or {}).get("track") or {}
+    if not isinstance(raw_track, dict):
+        emit("queue_error", {"error": "Invalid track payload"}, to=request.sid)
+        return
+
+    try:
+        item = add_to_queue(room_key, raw_track, added_by=username)
+    except Exception as exc:
+        emit("queue_error", {"error": str(exc)}, to=request.sid)
+        return
+
+    _emit_queue_updated(room_key, room_id=room_id)
+
+    if not get_now_playing(room_key):
+        started = _play_next_and_emit(room_key, room_id=room_id)
+        if not started:
+            _emit_play_track(room_key, item, room_id=room_id)
+
+
+@socketio.on("remove_from_queue")
+def on_remove_from_queue(data):
+    room_key = SID_ROOM.get(request.sid)
+    room_id = SID_ROOM_ID.get(request.sid)
+    username = SID_USERNAME.get(request.sid)
+    if not room_key or not room_id or not username:
+        return
+
+    if username != ROOM_HOSTS.get(room_key):
+        emit("queue_error", {"error": "Only the host can remove queued tracks."}, to=request.sid)
+        return
+
+    track_id = str((data or {}).get("track_id") or "").strip()
+    if not track_id:
+        return
+
+    removed = remove_from_queue(room_key, track_id)
+    if removed:
+        _emit_queue_updated(room_key, room_id=room_id)
+
+
+@socketio.on("clear_queue")
+def on_clear_queue(data):
+    room_key = SID_ROOM.get(request.sid)
+    room_id = SID_ROOM_ID.get(request.sid)
+    username = SID_USERNAME.get(request.sid)
+    if not room_key or not room_id or not username:
+        return
+
+    if username != ROOM_HOSTS.get(room_key):
+        emit("queue_error", {"error": "Only the host can clear the queue."}, to=request.sid)
+        return
+
+    clear_queue(room_key)
+    _emit_queue_updated(room_key, room_id=room_id)
+    _emit_play_track(room_key, None, room_id=room_id)
+
+
+@socketio.on("vote_track")
+def on_vote_track(data):
+    room_key = SID_ROOM.get(request.sid)
+    room_id = SID_ROOM_ID.get(request.sid)
+    username = SID_USERNAME.get(request.sid)
+    if not room_key or not room_id or not username:
+        return
+
+    track_id = str((data or {}).get("track_id") or "").strip()
+    if not track_id:
+        return
+
+    changed, _ = vote_track(room_key, track_id, username)
+    if changed:
+        _emit_queue_updated(room_key, room_id=room_id)
+
+
+@socketio.on("track_ended")
+def on_track_ended(data):
+    room_key = SID_ROOM.get(request.sid)
+    room_id = SID_ROOM_ID.get(request.sid)
+    if not room_key or not room_id:
+        return
+
+    now_playing = get_now_playing(room_key)
+    if not now_playing:
+        _emit_queue_updated(room_key, room_id=room_id)
+        _emit_play_track(room_key, None, room_id=room_id)
+        return
+
+    ended_track_id = str((data or {}).get("track_id") or "").strip()
+    active_track_id = str(now_playing.get("id") or "")
+    if ended_track_id and active_track_id and ended_track_id != active_track_id:
+        return
+
+    _play_next_and_emit(room_key, room_id=room_id)
 
 
 @socketio.on("video_sync_load")

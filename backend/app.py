@@ -3,12 +3,12 @@ import os
 
 from flask import Flask, request
 
-from auth import register_auth
-from config import APP_SECRET, DATABASE_URI, FRONTEND_DIR
-from extensions import init_extensions, db, socketio
-from models import ensure_user_email_column
-from routes import register_routes
-import sockets  # noqa: F401  # Register Socket.IO event handlers
+from backend.auth import register_auth
+from backend.config import APP_SECRET, DATABASE_URI, FRONTEND_DIR
+from backend.extensions import init_extensions, db, socketio
+from backend.models import ensure_user_email_column
+from backend.routes import register_routes
+import backend.sockets  # noqa: F401  # Register Socket.IO event handlers
 
 logging.basicConfig(
     level=getattr(logging, os.environ.get('LOG_LEVEL', 'INFO').upper(), logging.INFO),

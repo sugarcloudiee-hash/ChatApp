@@ -9,12 +9,12 @@ from flask import jsonify, request, send_from_directory
 from sqlalchemy import and_, or_
 from werkzeug.utils import secure_filename
 
-from auth import _current_user, find_or_sync_user_by_identifier
-from config import FRONTEND_DIR, UPLOAD_DIR
-from extensions import db, supabase
-from models import DirectMessage, FriendRequest, Friendship, Notification, User
-from sockets import emit_social_refresh
-from utils import _allowed_file, _make_file_token, _verify_file_token, _extract_room_key
+from backend.auth import _current_user, find_or_sync_user_by_identifier
+from backend.config import FRONTEND_DIR, UPLOAD_DIR
+from backend.extensions import db, supabase
+from backend.models import DirectMessage, FriendRequest, Friendship, Notification, User
+from backend.sockets import emit_social_refresh
+from backend.utils import _allowed_file, _make_file_token, _verify_file_token, _extract_room_key
 
 
 def _friendship_pair(username_a: str, username_b: str) -> tuple[str, str]:
