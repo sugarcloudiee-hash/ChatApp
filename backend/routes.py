@@ -17,6 +17,17 @@ from backend.sockets import emit_social_refresh
 from backend.utils import _allowed_file, _make_file_token, _verify_file_token, _extract_room_key
 
 
+def _asset_mimetype(path: str) -> str | None:
+    suffix = Path(path).suffix.lower()
+    if suffix in {".js", ".mjs", ".jsx"}:
+        return "text/javascript"
+    if suffix == ".css":
+        return "text/css"
+    if suffix == ".svg":
+        return "image/svg+xml"
+    return None
+
+
 def _friendship_pair(username_a: str, username_b: str) -> tuple[str, str]:
     clean_a = str(username_a or "").strip().lower()
     clean_b = str(username_b or "").strip().lower()
@@ -51,6 +62,13 @@ def register_routes(app):
 
     @app.get("/favicon.ico")
     def favicon():
+        return "", 204
+
+    @app.get("/favicon.svg")
+    def favicon_svg():
+        favicon_path = Path(app.static_folder) / "favicon.svg"
+        if favicon_path.exists() and favicon_path.is_file():
+            return send_from_directory(app.static_folder, "favicon.svg", mimetype="image/svg+xml")
         return "", 204
 
     @app.post("/session")
@@ -629,5 +647,8 @@ def register_routes(app):
     def frontend_assets(path: str):
         asset_path = Path(app.static_folder) / path
         if asset_path.exists() and asset_path.is_file():
+            mimetype = _asset_mimetype(path)
+            if mimetype:
+                return send_from_directory(app.static_folder, path, mimetype=mimetype)
             return send_from_directory(app.static_folder, path)
         return send_from_directory(app.static_folder, "index.html")

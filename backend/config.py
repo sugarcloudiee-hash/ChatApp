@@ -16,14 +16,16 @@ load_dotenv((BASE_DIR / ".." / "frontend" / ".env"), override=False)
 
 APP_SECRET = os.environ.get("CHAT_KEY", "").strip() or secrets.token_urlsafe(32)
 DEBUG_MODE = os.environ.get("FLASK_DEBUG") == "1" or os.environ.get("DEBUG") == "1"
+ALLOW_FRONTEND_SOURCE_SERVE = os.environ.get("ALLOW_FRONTEND_SOURCE_SERVE") == "1"
 
 if FRONTEND_DIST_DIR.exists():
     FRONTEND_DIR = FRONTEND_DIST_DIR
-elif DEBUG_MODE:
+elif DEBUG_MODE and ALLOW_FRONTEND_SOURCE_SERVE:
     FRONTEND_DIR = FRONTEND_SRC_DIR
 else:
     raise RuntimeError(
-        "frontend/dist is missing. Build the frontend before deployment (cd frontend && npm ci && npm run build)."
+        "frontend/dist is missing. Build the frontend before deployment (cd frontend && npm ci && npm run build). "
+        "If you intentionally want to serve frontend source files, set ALLOW_FRONTEND_SOURCE_SERVE=1."
     )
 
 DB_PATH = BASE_DIR / "data.db"
