@@ -4,6 +4,6 @@ services:
     env: python
     plan: starter
     region: oregon
-    buildCommand: pip install -r requirements.txt
-    startCommand: python backend/app.py
+    buildCommand: pip install -r requirements.txt && cd frontend && npm ci && npm run build && cd ..
+    startCommand: gunicorn -w 1 -k eventlet backend.app:app
     autoDeploy: true

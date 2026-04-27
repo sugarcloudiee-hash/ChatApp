@@ -84,21 +84,21 @@ if MAX_ACTIVE_CONNECTIONS < 1:
 
 def _default_local_origins():
     origins = [
-        "http://localhost:5000",
-        "http://127.0.0.1:5000",
+        "http://localhost:5050",
+        "http://127.0.0.1:5050",
         "https://dimension-pilot-seeds-lit.trycloudflare.com",
     ]
     try:
         host = socket.gethostname()
         for ip in socket.gethostbyname_ex(host)[2]:
             if ip and not ip.startswith("127."):
-                origins.append(f"http://{ip}:5000")
+                origins.append(f"http://{ip}:5050")
     except OSError:
         pass
     try:
         local_ip = socket.gethostbyname(socket.gethostname())
         if local_ip and not local_ip.startswith("127."):
-            origins.append(f"http://{local_ip}:5000")
+            origins.append(f"http://{local_ip}:5050")
     except OSError:
         pass
     return sorted(set(origins))
