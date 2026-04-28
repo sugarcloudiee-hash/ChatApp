@@ -1,7 +1,9 @@
 ﻿import logging
+import mimetypes
 import os
+from pathlib import Path
 
-from flask import Flask, request
+from flask import Flask, request, send_from_directory
 
 from backend.auth import register_auth
 from backend.config import APP_SECRET, DATABASE_URI, FRONTEND_DIR
@@ -20,10 +22,16 @@ logging.getLogger('httpcore').setLevel(logging.WARNING)
 logging.getLogger('hpack').setLevel(logging.WARNING)
 logger.info("Backend application starting up...")
 
+# Ensure module scripts are served with correct MIME types
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".mjs")
+mimetypes.add_type("text/javascript", ".jsx")
+mimetypes.add_type("text/css", ".css")
+
 app = Flask(
     __name__,
     static_folder=str(FRONTEND_DIR),
-    static_url_path="",
+    static_url_path="/assets",
 )
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URI
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -56,6 +64,41 @@ def log_request_info():
         logger.debug(f"    Query: {dict(request.args)}")
     if request.form:
         logger.debug(f"    Form: {dict(request.form)}")
+
+# Serve index.html for SPA routing (catch-all for non-API routes)
+@app.route("/", defaults={"filename": "index.html"})
+@app.route("/<path:filename>")
+def serve_spa(filename):
+    """Serve static files from dist folder, or index.html for SPA routing"""
+    try:
+        # Check if file exists
+        filepath = Path(FRONTEND_DIR) / filename
+        if filepath.exists() and filepath.is_file():
+            # Serve the actual file
+            return send_from_directory(FRONTEND_DIR, filename)
+    except Exception as e:
+        logger.debug(f"Error serving file {filename}: {e}")
+    
+    # Return index.html for SPA routing (unless it's an API route)
+    if not filename.startswith("api/") and "." not in filename.split("/")[-1]:
+        return send_from_directory(FRONTEND_DIR, "index.html")
+    
+    return "Not Found", 404
+
+with app.app_context():
+    db.create_all()
+    ensure_user_email_column()
+
+if __name__ == "__main__":
+    port = int(os.environ.get('PORT', 5050))
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        use_reloader=False,
+        allow_unsafe_werkzeug=True,
+    )
 
 with app.app_context():
     db.create_all()
