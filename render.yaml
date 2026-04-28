@@ -1,9 +1,12 @@
 services:
   - type: web
     name: chat-backend
-    env: python
-    plan: starter
+    runtime: docker
     region: oregon
-    buildCommand: pip install -r requirements.txt && cd frontend && npm ci && npm run build && cd ..
-    startCommand: gunicorn -w 1 -k eventlet backend.app:app
+    plan: starter
     autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 5050
+      - key: NODE_ENV
+        value: production
