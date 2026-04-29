@@ -9,18 +9,28 @@ try:
 except Exception:  # pragma: no cover
     redis = None
 
-from config import REDIS_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+from backend.config import CORS_ORIGINS, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, REDIS_URL
 
 
 db = SQLAlchemy()
 
+
+def _socketio_cors_origins():
+    if CORS_ORIGINS == ["*"]:
+        return "*"
+    return CORS_ORIGINS
+
+
 socketio = SocketIO(
-    cors_allowed_origins="*",
+    cors_allowed_origins=_socketio_cors_origins(),
     manage_session=False,
     ping_timeout=60,
     ping_interval=25,
+    # Allow selecting eventlet/gevent/threading via environment when needed.
+    async_mode=None,
     message_queue=REDIS_URL or None,
 )
+
 serializer = None
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 redis_client = None

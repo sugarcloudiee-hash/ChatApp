@@ -170,6 +170,30 @@
             <div class="sync-player-note">Use this for providers that do not allow direct embed playback.</div>
           </div>
           <div class="sync-player-hint">Supports shared video and music playback from direct files plus Google Drive, Dropbox, Google Photos, and YouTube links.</div>
+
+          <section id="partyQueuePanel" class="party-queue" aria-label="Party queue">
+            <div class="party-queue-header">
+              <div>
+                <div class="sync-player-kicker">Party Queue</div>
+                <h3 class="party-queue-title">Group session</h3>
+              </div>
+              <button id="queueClearBtn" class="btn ghost small" type="button">Clear queue</button>
+            </div>
+
+            <div class="party-queue-add">
+              <input id="queueUrlInput" class="input" type="url" placeholder="Paste track or video URL" aria-label="Track URL" />
+              <input id="queueTitleInput" class="input" type="text" placeholder="Optional title" aria-label="Track title" />
+              <input id="queueDurationInput" class="input" type="number" min="0" step="1" placeholder="Duration (sec)" aria-label="Track duration seconds" />
+              <button id="queueAddBtn" class="btn primary" type="button">Add to queue</button>
+            </div>
+
+            <div class="party-now-playing">
+              <div class="party-now-label">Now playing</div>
+              <div id="nowPlayingContent" class="party-now-content">Nothing is playing yet.</div>
+            </div>
+
+            <div id="queueList" class="party-queue-list"></div>
+          </section>
         </section>
         <div id="messages" class="messages" aria-live="polite"></div>
       </main>

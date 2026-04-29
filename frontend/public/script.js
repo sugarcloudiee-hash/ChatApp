@@ -29,6 +29,14 @@ const youtubeSearchResults = document.getElementById("youtubeSearchResults");
 const youtubeSearchStatus = document.getElementById("youtubeSearchStatus");
 const youtubeDirectUrlInput = document.getElementById("youtubeDirectUrlInput");
 const youtubeLoadBtn = document.getElementById("youtubeLoadBtn");
+const queuePanel = document.getElementById("partyQueuePanel");
+const queueList = document.getElementById("queueList");
+const nowPlayingContent = document.getElementById("nowPlayingContent");
+const queueUrlInput = document.getElementById("queueUrlInput");
+const queueTitleInput = document.getElementById("queueTitleInput");
+const queueDurationInput = document.getElementById("queueDurationInput");
+const queueAddBtn = document.getElementById("queueAddBtn");
+const queueClearBtn = document.getElementById("queueClearBtn");
 
 const loginOverlay = document.getElementById("loginOverlay");
 const meLabel = document.getElementById("meLabel");
@@ -116,6 +124,8 @@ let lastPresenceMembers = [];
 let currentTypingUsers = [];
 let selectedMemberUsername = "";
 const pendingMessageNodes = new Map();
+let partyQueueItems = [];
+let partyNowPlaying = null;
 
 function extractFirstUrl(text) {
   const input = String(text || "").trim();
@@ -213,7 +223,7 @@ function resolveStreamSource(input, preferredKind = "") {
       kind: "embed",
       provider: "YouTube",
       sourceUrl: urlText,
-      embedUrl: `https://www.youtube.com/embed/${youtubeId}?rel=0&modestbranding=1`,
+      embedUrl: `https://www.youtube.com/embed/${youtubeId}?enablejsapi=1&rel=0&modestbranding=1`,
       label: "YouTube stream",
     };
   }
@@ -604,7 +614,7 @@ function emitSyncedVideoState() {
   socket.emit("video_sync_state", payload);
 }
 
-function loadSyncedVideo(sourceUrl, sourceTitle, sourceKind = "") {
+function loadSyncedVideo(sourceUrl, sourceTitle, sourceKind = "", shouldEmit = true) {
   if (!sourceUrl) return;
   const streamInfo = resolveStreamSource(sourceUrl, sourceKind);
   if (!streamInfo) {
@@ -619,7 +629,7 @@ function loadSyncedVideo(sourceUrl, sourceTitle, sourceKind = "") {
     playing: false,
     playback_rate: 1,
   });
-  if (socket && socket.connected) {
+  if (shouldEmit && socket && socket.connected) {
     socket.emit("video_sync_load", {
       source_url: streamInfo.sourceUrl,
       source_kind: streamInfo.kind,
@@ -656,6 +666,159 @@ function startStreamFromInput() {
     streamUrlInput.value = "";
     streamUrlInput.focus();
   }
+}
+
+function formatDurationSeconds(rawDuration) {
+  const total = Math.max(0, Math.round(Number(rawDuration || 0)));
+  if (!total) return "live";
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function getUnifiedPlayer() {
+  if (syncAudio && !syncAudio.classList.contains("hidden") && syncAudio.src) {
+    return {
+      play: () => syncAudio.play(),
+      pause: () => syncAudio.pause(),
+      seek: (position) => { syncAudio.currentTime = Math.max(0, position || 0); },
+      getCurrentTime: () => Number(syncAudio.currentTime || 0),
+      kind: "audio",
+    };
+  }
+
+  if (syncVideo && !syncVideo.classList.contains("hidden") && syncVideo.src) {
+    return {
+      play: () => syncVideo.play(),
+      pause: () => syncVideo.pause(),
+      seek: (position) => { syncVideo.currentTime = Math.max(0, position || 0); },
+      getCurrentTime: () => Number(syncVideo.currentTime || 0),
+      kind: "video",
+    };
+  }
+
+  return {
+    play: () => {},
+    pause: () => {},
+    seek: () => {},
+    getCurrentTime: () => 0,
+    kind: "external",
+  };
+}
+
+function renderPartyQueue() {
+  if (!queuePanel || !queueList || !nowPlayingContent) return;
+
+  const clearDisabled = !isHost || (!partyQueueItems.length && !partyNowPlaying);
+  if (queueClearBtn) {
+    queueClearBtn.disabled = clearDisabled;
+    queueClearBtn.title = isHost ? "Clear queue" : "Host only";
+  }
+
+  if (partyNowPlaying) {
+    const nowDuration = formatDurationSeconds(partyNowPlaying.duration);
+    nowPlayingContent.textContent = `${partyNowPlaying.title} (${nowDuration})`;
+  } else {
+    nowPlayingContent.textContent = "Nothing is playing yet.";
+  }
+
+  if (!partyQueueItems.length) {
+    queueList.innerHTML = '<div class="queue-empty">Queue is empty. Add a track to start the party.</div>';
+    return;
+  }
+
+  queueList.innerHTML = "";
+  partyQueueItems.forEach((track) => {
+    const row = document.createElement("div");
+    row.className = "queue-row";
+
+    const main = document.createElement("div");
+    main.className = "queue-row-main";
+
+    const title = document.createElement("div");
+    title.className = "queue-row-title";
+    title.textContent = track.title || "Untitled track";
+
+    const meta = document.createElement("div");
+    meta.className = "queue-row-meta";
+    meta.textContent = `${formatDurationSeconds(track.duration)} · votes ${Number(track.votes || 0)} · by ${track.added_by || "unknown"}`;
+
+    main.appendChild(title);
+    main.appendChild(meta);
+
+    const actions = document.createElement("div");
+    actions.className = "queue-row-actions";
+
+    const voteBtn = document.createElement("button");
+    voteBtn.type = "button";
+    voteBtn.className = "btn ghost small";
+    voteBtn.textContent = "👍";
+    voteBtn.title = "Upvote";
+    voteBtn.addEventListener("click", () => {
+      if (!socket || !socket.connected) return;
+      socket.emit("vote_track", { track_id: track.id });
+    });
+    actions.appendChild(voteBtn);
+
+    if (isHost) {
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "btn ghost small";
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("click", () => {
+        if (!socket || !socket.connected) return;
+        socket.emit("remove_from_queue", { track_id: track.id });
+      });
+      actions.appendChild(removeBtn);
+    }
+
+    row.appendChild(main);
+    row.appendChild(actions);
+    queueList.appendChild(row);
+  });
+}
+
+function applyQueueSnapshot(payload) {
+  const snapshot = payload || {};
+  partyQueueItems = Array.isArray(snapshot.queue) ? snapshot.queue : [];
+  partyNowPlaying = snapshot.now_playing || null;
+  renderPartyQueue();
+}
+
+function playTrackInSync(track, startTimeMs) {
+  if (!track || !track.url) {
+    partyNowPlaying = null;
+    applySyncedVideoState(null);
+    renderPartyQueue();
+    return;
+  }
+
+  const driftSeconds = Math.max(0, (Date.now() - Number(startTimeMs || Date.now())) / 1000);
+  const stream = resolveStreamSource(track.url, "");
+  if (!stream) {
+    if (socket && socket.connected) {
+      socket.emit("track_ended", { track_id: track.id, reason: "invalid_url" });
+    }
+    return;
+  }
+
+  loadSyncedVideo(stream.sourceUrl, track.title || stream.label || "Queued track", stream.kind, false);
+
+  const trySync = () => {
+    const player = getUnifiedPlayer();
+    const targetTime = Math.max(0, driftSeconds);
+    const currentTime = player.getCurrentTime();
+    if (Math.abs(currentTime - targetTime) > 1.5) {
+      player.seek(targetTime);
+    }
+    const playPromise = player.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {});
+    }
+  };
+
+  window.setTimeout(trySync, 250);
+  window.setTimeout(trySync, 1800);
 }
 
 function renderYouTubeSearchStatus(text) {
@@ -1347,6 +1510,10 @@ function updateRoomInfo() {
   memberBadge.classList.toggle('hidden', roomMemberCount <= 0);
   memberBadge.textContent = roomMemberCount > 0 ? `${roomMemberCount} online` : '';
   inviteByUsernameWrap.classList.toggle('hidden', !isHost || !roomKey);
+  if (queueClearBtn) {
+    queueClearBtn.disabled = !isHost;
+  }
+  renderPartyQueue();
 }
 
 function setActiveTab(tab) {
@@ -2044,6 +2211,7 @@ function connectSocket() {
       renderSelectedMember(selected);
     }
     updateRoomInfo();
+    renderPartyQueue();
   });
 
   socket.on("awaiting_approval", ({ message, host }) => {
@@ -2120,6 +2288,21 @@ function connectSocket() {
     applySyncedVideoState(state);
   });
 
+  socket.on("queue_updated", (snapshot) => {
+    applyQueueSnapshot(snapshot);
+  });
+
+  socket.on("play_track", (payload) => {
+    const track = payload?.track || null;
+    partyNowPlaying = track;
+    renderPartyQueue();
+    playTrackInSync(track, payload?.start_time || Date.now());
+  });
+
+  socket.on("queue_error", ({ error }) => {
+    showToast(error || "Queue action failed", { type: "warning" });
+  });
+
   socket.on("video_sync_denied", ({ reason }) => {
     showToast(reason || "Video sync denied", { type: "warning" });
     console.warn("Video sync denied:", reason);
@@ -2147,6 +2330,9 @@ function connectSocket() {
     clearPendingApprovalToast();
     applySyncedVideoState(null);
     renderPresence(lastPresenceMembers);
+    partyQueueItems = [];
+    partyNowPlaying = null;
+    renderPartyQueue();
   });
 }
 
@@ -2455,6 +2641,8 @@ async function handleSignOut() {
   currentTypingUsers = [];
   lastPresenceMembers = [];
   selectedMemberUsername = "";
+  partyQueueItems = [];
+  partyNowPlaying = null;
   closeMemberProfile();
   updateRoomInfo();
   showLogin(true);
@@ -2594,6 +2782,89 @@ if (streamUrlInput) {
       event.preventDefault();
       startStreamFromInput();
     }
+  });
+}
+
+function submitQueueTrack() {
+  if (!socket || !socket.connected) {
+    showToast("Join a room first.", { type: "warning" });
+    return;
+  }
+
+  const url = String(queueUrlInput?.value || "").trim();
+  const title = String(queueTitleInput?.value || "").trim() || "Queued track";
+  const duration = Number(queueDurationInput?.value || 0) || 0;
+  if (!url) {
+    showToast("Track URL is required", { type: "warning" });
+    return;
+  }
+
+  socket.emit("add_to_queue", {
+    track: {
+      title,
+      url,
+      duration,
+    },
+  });
+
+  if (queueUrlInput) queueUrlInput.value = "";
+  if (queueTitleInput) queueTitleInput.value = "";
+  if (queueDurationInput) queueDurationInput.value = "";
+}
+
+if (queueAddBtn) {
+  queueAddBtn.addEventListener("click", submitQueueTrack);
+}
+
+if (queueUrlInput) {
+  queueUrlInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitQueueTrack();
+    }
+  });
+}
+
+if (queueTitleInput) {
+  queueTitleInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitQueueTrack();
+    }
+  });
+}
+
+if (queueDurationInput) {
+  queueDurationInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitQueueTrack();
+    }
+  });
+}
+
+if (queueClearBtn) {
+  queueClearBtn.addEventListener("click", () => {
+    if (!isHost) {
+      showToast("Only host can clear queue", { type: "warning" });
+      return;
+    }
+    if (!socket || !socket.connected) return;
+    socket.emit("clear_queue");
+  });
+}
+
+if (syncVideo) {
+  syncVideo.addEventListener("ended", () => {
+    if (!socket || !socket.connected || !partyNowPlaying) return;
+    socket.emit("track_ended", { track_id: partyNowPlaying.id });
+  });
+}
+
+if (syncAudio) {
+  syncAudio.addEventListener("ended", () => {
+    if (!socket || !socket.connected || !partyNowPlaying) return;
+    socket.emit("track_ended", { track_id: partyNowPlaying.id });
   });
 }
 
