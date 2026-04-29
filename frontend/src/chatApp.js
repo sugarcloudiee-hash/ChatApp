@@ -1726,11 +1726,8 @@ function connectSocket() {
   if (socket) return;
   setControlsEnabled(false);
   setConnectionStatus('Connecting...');
-  const isLocalBackend = /localhost|127\.0\.0\.1/i.test(BACKEND_BASE_URL);
   socket = io(BACKEND_BASE_URL, {
-    // On local setups keep polling transport to avoid websocket frame/proxy issues.
-    transports: isLocalBackend ? ["polling"] : ["polling", "websocket"],
-    upgrade: !isLocalBackend,
+    transports: ["polling"],  // Use polling on Windows dev server (WebSocket not supported on Werkzeug)
     auth: {
       access_token: supabaseSession?.access_token,
       room_key: roomKey,

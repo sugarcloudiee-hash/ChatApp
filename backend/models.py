@@ -133,7 +133,9 @@ class DirectMessage(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     sender_username = db.Column(db.String(64), nullable=False, index=True)
     receiver_username = db.Column(db.String(64), nullable=False, index=True)
-    message = db.Column(db.Text, nullable=False)
+    message = db.Column(db.Text, nullable=False, default="")
+    type = db.Column(db.String(16), nullable=False, default="text")
+    file_url = db.Column(db.String(256), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
     read_at = db.Column(db.DateTime, nullable=True)
 
@@ -143,9 +145,26 @@ class DirectMessage(db.Model):
             "sender_username": self.sender_username,
             "receiver_username": self.receiver_username,
             "message": self.message,
+            "type": self.type,
+            "file_url": self.file_url,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "read_at": self.read_at.isoformat() if self.read_at else None,
         }
+
+
+def ensure_direct_message_columns():
+    table_name = DirectMessage.__tablename__
+    inspector = inspect(db.engine)
+    columns = {column["name"] for column in inspector.get_columns(table_name)}
+
+    if "type" not in columns:
+        db.session.execute(text(f"ALTER TABLE \"{table_name}\" ADD COLUMN type VARCHAR(16) DEFAULT 'text'"))
+        db.session.execute(text(f"UPDATE \"{table_name}\" SET type = 'text' WHERE type IS NULL"))
+
+    if "file_url" not in columns:
+        db.session.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN file_url VARCHAR(256)'))
+
+    db.session.commit()
 
 
 class Notification(db.Model):

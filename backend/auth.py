@@ -1,6 +1,6 @@
 from flask import g, jsonify, request
 from sqlalchemy import func, or_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from threading import Lock
 import time
 
@@ -258,6 +258,9 @@ def register_auth(app):
 
         try:
             _current_user()
+        except OperationalError as exc:
+            app.logger.error(f"Database unavailable during auth: {str(exc)}")
+            return jsonify({"error": "Database temporarily unavailable"}), 503
         except Exception as exc:
             app.logger.warning(f"Unauthorized request: {str(exc)}")
             return jsonify({"error": "Unauthorized"}), 401

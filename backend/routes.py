@@ -1,6 +1,7 @@
 import json
 import re
 import uuid
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -11,9 +12,10 @@ from werkzeug.utils import secure_filename
 
 from auth import _current_user, find_or_sync_user_by_identifier
 from config import FRONTEND_DIR, UPLOAD_DIR
-from extensions import db, supabase
+from extensions import db, socketio, supabase
+from state import SOCIAL_LAST_ACTIVE
 from models import DirectMessage, FriendRequest, Friendship, Notification, User
-from sockets import emit_social_refresh
+from sockets import emit_social_refresh, get_social_presence_snapshot
 from utils import _allowed_file, _make_file_token, _verify_file_token, _extract_room_key
 
 
@@ -37,6 +39,12 @@ def _create_notification(username: str, kind: str, payload: dict):
     )
     db.session.add(note)
     return note
+
+
+def _touch_social_activity(username: str):
+    clean_username = str(username or "").strip().lower()
+    if clean_username:
+        SOCIAL_LAST_ACTIVE[clean_username] = time.time()
 
 
 def register_routes(app):
@@ -320,6 +328,7 @@ def register_routes(app):
     @app.get("/social/chats")
     def social_chat_list():
         user = _current_user()
+        _touch_social_activity(user.username)
         friendships = Friendship.query.filter(
             or_(Friendship.user_a == user.username, Friendship.user_b == user.username)
         ).all()
@@ -335,9 +344,14 @@ def register_routes(app):
                     "email": profile.email,
                 }
 
+        presence_map = get_social_presence_snapshot(friend_usernames)
+
         conversation_map = {
             username: {
-                "friend": friend_profiles.get(username, {"username": username, "display_name": username, "avatar": "?", "email": ""}),
+                "friend": {
+                    **friend_profiles.get(username, {"username": username, "display_name": username, "avatar": "?", "email": ""}),
+                    "presence": presence_map.get(username, {"status": "offline", "last_active": 0.0}),
+                },
                 "last_message": None,
                 "unread": 0,
             }
@@ -377,6 +391,7 @@ def register_routes(app):
     @app.get("/social/chats/<friend_username>/messages")
     def social_chat_messages(friend_username: str):
         user = _current_user()
+        _touch_social_activity(user.username)
         peer = str(friend_username or "").strip().lower()
         if not peer:
             return jsonify({"error": "Friend username is required."}), 400
@@ -396,13 +411,26 @@ def register_routes(app):
         )
 
         updated = False
+        read_ids: list[int] = []
         for row in rows:
             if row.receiver_username == user.username and row.read_at is None:
                 row.read_at = datetime.utcnow()
                 updated = True
+                read_ids.append(row.id)
 
         if updated:
             db.session.commit()
+            socketio.emit(
+                "dm_read",
+                {
+                    "reader": user.username,
+                    "peer": peer,
+                    "ids": read_ids,
+                    "read_at": datetime.utcnow().isoformat() + "Z",
+                },
+                room=f"social:{peer}",
+                namespace="/social",
+            )
 
         friend_profile = User.query.filter_by(username=peer).first()
         return jsonify(
@@ -420,6 +448,7 @@ def register_routes(app):
     @app.post("/social/chats/<friend_username>/messages")
     def social_send_chat_message(friend_username: str):
         user = _current_user()
+        _touch_social_activity(user.username)
         peer = str(friend_username or "").strip().lower()
         if not peer:
             return jsonify({"error": "Friend username is required."}), 400
@@ -427,14 +456,24 @@ def register_routes(app):
             return jsonify({"error": "You can only message accepted friends."}), 403
 
         payload = request.get_json(silent=True) or {}
+        msg_type = str(payload.get("type") or "text").strip().lower()
+        if msg_type not in {"text", "voice"}:
+            msg_type = "text"
+
         text = str(payload.get("message") or "").strip()
-        if not text:
+        file_url = str(payload.get("file_url") or "").strip() or None
+
+        if msg_type == "text" and not text:
             return jsonify({"error": "Message cannot be empty."}), 400
+        if msg_type == "voice" and not file_url:
+            return jsonify({"error": "Voice message is missing audio URL."}), 400
 
         message_row = DirectMessage(
             sender_username=user.username,
             receiver_username=peer,
             message=text,
+            type=msg_type,
+            file_url=file_url,
             created_at=datetime.utcnow(),
             read_at=None,
         )
@@ -446,13 +485,35 @@ def register_routes(app):
             {
                 "from": user.username,
                 "display_name": user.display_name,
-                "preview": text[:120],
+                "preview": text[:120] if text else ("Sent a voice note" if msg_type == "voice" else "New message"),
             },
         )
         db.session.commit()
+        payload = message_row.to_dict()
+
+        socketio.emit(
+            "dm_message",
+            {
+                "from": user.username,
+                "to": peer,
+                "message": payload,
+            },
+            room=f"social:{peer}",
+            namespace="/social",
+        )
+        socketio.emit(
+            "dm_message",
+            {
+                "from": user.username,
+                "to": peer,
+                "message": payload,
+            },
+            room=f"social:{user.username}",
+            namespace="/social",
+        )
         emit_social_refresh(user.username, peer)
 
-        return jsonify({"message": message_row.to_dict()}), 201
+        return jsonify({"message": payload}), 201
 
     @app.get("/social/notifications")
     def social_notifications():
@@ -476,6 +537,15 @@ def register_routes(app):
         emit_social_refresh(user.username)
         return jsonify({"updated": len(rows)}), 200
 
+    @app.post("/social/presence/ping")
+    def social_presence_ping():
+        user = _current_user()
+        now = time.time()
+        SOCIAL_LAST_ACTIVE[user.username] = now
+        emit_social_refresh(user.username)
+        presence = get_social_presence_snapshot([user.username]).get(user.username, {"status": "online", "last_active": now})
+        return jsonify({"ok": True, "presence": presence}), 200
+
     @app.post("/upload")
     def upload():
         user = _current_user()
@@ -484,7 +554,7 @@ def register_routes(app):
 
         room_key = _extract_room_key()
         if not room_key:
-            return jsonify({"error": "Missing room invite key"}), 400
+            room_key = "dm"
 
         if "file" not in request.files:
             return jsonify({"error": "Missing file field 'file'"}), 400

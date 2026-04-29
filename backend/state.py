@@ -10,3 +10,7 @@ ROOM_ALLOWED_USERS: dict[str, set[str]] = {}  # room_key -> invited usernames
 SID_ROOM: dict[str, str] = {}  # sid -> room_key
 SID_ROOM_ID: dict[str, str] = {}  # sid -> room_id
 SID_USERNAME: dict[str, str] = {}  # sid -> username
+
+SOCIAL_USER_SIDS: dict[str, set[str]] = {}  # username -> connected social socket sids
+SOCIAL_LAST_ACTIVE: dict[str, float] = {}  # username -> epoch seconds of last activity
+SOCIAL_SID_USERNAME: dict[str, str] = {}  # social socket sid -> username

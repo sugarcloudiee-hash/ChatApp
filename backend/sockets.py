@@ -2,18 +2,76 @@ import uuid
 import json
 import logging
 import time
+from datetime import datetime
 from flask import request
 from flask_socketio import disconnect, emit, join_room, leave_room
+from sqlalchemy import or_
 
 from auth import _current_user, find_or_sync_user_by_identifier
-from extensions import db, socketio
-from models import Message, Room, User
-from state import ROOM_ALLOWED_USERS, ROOM_HOSTS, ROOM_IDS, ROOM_INVITE_TOKENS, ROOM_MEMBERS, ROOM_PENDING, ROOM_PRIVACY, ROOM_TYPING, SID_ROOM, SID_ROOM_ID, SID_USERNAME
+from config import MESSAGE_RATE_LIMIT_COUNT, MESSAGE_RATE_LIMIT_WINDOW_SECONDS
+from extensions import db, redis_client, socketio
+from models import DirectMessage, Friendship, Message, Room, User
+from state import ROOM_ALLOWED_USERS, ROOM_HOSTS, ROOM_IDS, ROOM_INVITE_TOKENS, ROOM_MEMBERS, ROOM_PENDING, ROOM_PRIVACY, ROOM_TYPING, SID_ROOM, SID_ROOM_ID, SID_USERNAME, SOCIAL_LAST_ACTIVE, SOCIAL_SID_USERNAME, SOCIAL_USER_SIDS
 from utils import _cleanup_room_if_empty, _find_message, _get_member, _get_room_id, _get_room_messages, _get_room_playback, _present_members, _set_room_playback, _utc_timestamp
 
 
 logger = logging.getLogger(__name__)
 _SYNC_BROADCASTER_STARTED = False
+_LOCAL_MESSAGE_RATE_TRACKER: dict[str, list[float]] = {}
+
+
+def _presence_status(username: str) -> str:
+    lowered = str(username or "").strip().lower()
+    if not lowered:
+        return "offline"
+
+    sids = SOCIAL_USER_SIDS.get(lowered, set())
+    if sids:
+        return "online"
+
+    last_active = float(SOCIAL_LAST_ACTIVE.get(lowered) or 0.0)
+    if not last_active:
+        return "offline"
+    age = time.time() - last_active
+    if age < 90:
+        return "online"
+    if age < 180:
+        return "idle"
+    return "offline"
+
+
+def get_social_presence_snapshot(usernames: list[str]) -> dict[str, dict]:
+    snapshot: dict[str, dict] = {}
+    for username in usernames:
+        lowered = str(username or "").strip().lower()
+        if not lowered:
+            continue
+        snapshot[lowered] = {
+            "status": _presence_status(lowered),
+            "last_active": float(SOCIAL_LAST_ACTIVE.get(lowered) or 0.0),
+        }
+    return snapshot
+
+
+def _is_message_rate_limited(room_key: str, username: str) -> bool:
+    identity = f"{room_key}:{username}".lower()
+    redis_key = f"chat:rate:message:{identity}"
+
+    if redis_client is not None:
+        try:
+            current = int(redis_client.incr(redis_key))
+            if current == 1:
+                redis_client.expire(redis_key, MESSAGE_RATE_LIMIT_WINDOW_SECONDS)
+            return current > MESSAGE_RATE_LIMIT_COUNT
+        except Exception as exc:
+            logger.warning(f"Redis rate limit fallback for {identity}: {exc}")
+
+    now = time.time()
+    window_start = now - float(MESSAGE_RATE_LIMIT_WINDOW_SECONDS)
+    recent = [stamp for stamp in _LOCAL_MESSAGE_RATE_TRACKER.get(identity, []) if stamp >= window_start]
+    recent.append(now)
+    _LOCAL_MESSAGE_RATE_TRACKER[identity] = recent
+    return len(recent) > MESSAGE_RATE_LIMIT_COUNT
 
 
 def emit_social_refresh(*usernames: str):
@@ -22,7 +80,18 @@ def emit_social_refresh(*usernames: str):
         for username in usernames
         if str(username or "").strip()
     }
-    for username in unique_usernames:
+    if not unique_usernames:
+        return
+
+    target_usernames = set(unique_usernames)
+    for username in list(unique_usernames):
+        friendships = Friendship.query.filter(
+            or_(Friendship.user_a == username, Friendship.user_b == username)
+        ).all()
+        for friendship in friendships:
+            target_usernames.add(friendship.user_b if friendship.user_a == username else friendship.user_a)
+
+    for username in target_usernames:
         socketio.emit(
             "social_refresh",
             {"username": username},
@@ -241,15 +310,103 @@ def on_social_connect(auth=None):
             auth = {}
         token = str(auth.get("access_token") or request.args.get("access_token") or "").strip()
         user = _current_user(token if token else None)
-        join_room(f"social:{user.username}", sid=request.sid, namespace="/social")
-        emit("social_connected", {"ok": True, "username": user.username})
-    except Exception:
+        username = user.username
+        join_room(f"social:{username}", sid=request.sid, namespace="/social")
+        SOCIAL_SID_USERNAME[request.sid] = username
+        SOCIAL_USER_SIDS.setdefault(username, set()).add(request.sid)
+        SOCIAL_LAST_ACTIVE[username] = time.time()
+        emit("social_connected", {
+            "ok": True,
+            "username": username,
+            "presence": {"status": _presence_status(username), "last_active": SOCIAL_LAST_ACTIVE.get(username)},
+        })
+        emit_social_refresh(username)
+    except Exception as exc:
+        logger.warning(f"Social socket connect rejected: {exc}")
         return False
 
 
 @socketio.on("disconnect", namespace="/social")
 def on_social_disconnect():
-    return
+    username = SOCIAL_SID_USERNAME.pop(request.sid, "")
+    if not username:
+        return
+
+    sid_set = SOCIAL_USER_SIDS.get(username, set())
+    sid_set.discard(request.sid)
+    if sid_set:
+        SOCIAL_USER_SIDS[username] = sid_set
+    else:
+        SOCIAL_USER_SIDS.pop(username, None)
+    SOCIAL_LAST_ACTIVE[username] = time.time()
+    emit_social_refresh(username)
+
+
+@socketio.on("dm_typing", namespace="/social")
+def on_social_dm_typing(data):
+    try:
+        if not isinstance(data, dict):
+            data = {}
+        token = str(data.get("access_token") or request.args.get("access_token") or "").strip()
+        sender = _current_user(token if token else None)
+        to_user = str(data.get("to") or "").strip().lower()
+        if not to_user:
+            return
+        emit(
+            "dm_typing",
+            {
+                "from": sender.username,
+                "typing": bool(data.get("typing")),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+            room=f"social:{to_user}",
+            namespace="/social",
+        )
+    except Exception:
+        return
+
+
+@socketio.on("dm_read", namespace="/social")
+def on_social_dm_read(data):
+    try:
+        if not isinstance(data, dict):
+            data = {}
+        token = str(data.get("access_token") or request.args.get("access_token") or "").strip()
+        reader = _current_user(token if token else None)
+        peer = str(data.get("peer") or "").strip().lower()
+        if not peer:
+            return
+
+        unread_rows = DirectMessage.query.filter_by(
+            sender_username=peer,
+            receiver_username=reader.username,
+            read_at=None,
+        ).all()
+        if not unread_rows:
+            return
+
+        now = datetime.utcnow()
+        read_ids = []
+        for row in unread_rows:
+            row.read_at = now
+            read_ids.append(row.id)
+        db.session.commit()
+
+        emit(
+            "dm_read",
+            {
+                "reader": reader.username,
+                "peer": peer,
+                "ids": read_ids,
+                "read_at": now.isoformat() + "Z",
+            },
+            room=f"social:{peer}",
+            namespace="/social",
+        )
+        emit_social_refresh(reader.username, peer)
+    except Exception:
+        db.session.rollback()
+        return
 
 
 @socketio.on("disconnect")
@@ -335,6 +492,16 @@ def on_send_message(data):
 
     member = _get_member(room_key, username) or {}
     _touch_member(room_key, username)
+
+    if _is_message_rate_limited(room_key, username):
+        emit("rate_limited", {
+            "event": "send_message",
+            "limit": MESSAGE_RATE_LIMIT_COUNT,
+            "window_seconds": MESSAGE_RATE_LIMIT_WINDOW_SECONDS,
+            "message": "Too many messages in a short time. Please slow down.",
+        }, to=request.sid)
+        return
+
     message = str((data or {}).get("message") or "")
     msg_type = str((data or {}).get("type") or "text")
     file_url = (data or {}).get("file_url")

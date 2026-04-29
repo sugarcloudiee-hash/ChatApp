@@ -1,8 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
-import { io } from 'socket.io-client'
 
 let supabaseClient = null
+
+const formatLastActive = (epochSeconds) => {
+  const value = Number(epochSeconds || 0)
+  if (!value) return 'Last active unavailable'
+  const delta = Math.max(0, Math.floor(Date.now() / 1000 - value))
+  if (delta < 60) return 'Active just now'
+  if (delta < 3600) return `Active ${Math.floor(delta / 60)}m ago`
+  if (delta < 86400) return `Active ${Math.floor(delta / 3600)}h ago`
+  return `Active ${Math.floor(delta / 86400)}d ago`
+}
 
 const getSupabaseClient = () => {
   const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || window.SUPABASE_URL || ''
@@ -37,7 +46,7 @@ function App() {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
 
-  const [socialTab, setSocialTab] = useState('notifications')
+  const [socialTab, setSocialTab] = useState('messages')
   const [socialLoading, setSocialLoading] = useState(false)
   const [socialError, setSocialError] = useState('')
   const [notifications, setNotifications] = useState([])
@@ -50,6 +59,27 @@ function App() {
   const [selectedFriend, setSelectedFriend] = useState('')
   const [dmMessages, setDmMessages] = useState([])
   const [dmInput, setDmInput] = useState('')
+  const [dmTypingUsers, setDmTypingUsers] = useState({})
+  const [voiceRecording, setVoiceRecording] = useState(false)
+  const [voiceUploading, setVoiceUploading] = useState(false)
+  const [voiceError, setVoiceError] = useState('')
+
+  const selectedFriendRef = useRef('')
+  const typingStopTimerRef = useRef(null)
+  const mediaRecorderRef = useRef(null)
+  const voiceChunksRef = useRef([])
+  const mediaStreamRef = useRef(null)
+
+  const currentUsername = useMemo(() => String(userEmail || '').trim().toLowerCase(), [userEmail])
+  const selectedConversation = useMemo(
+    () => conversations.find((row) => row.friend.username === selectedFriend) || null,
+    [conversations, selectedFriend],
+  )
+  const selectedFriendPresence = selectedConversation?.friend?.presence || { status: 'offline', last_active: 0 }
+
+  useEffect(() => {
+    selectedFriendRef.current = selectedFriend
+  }, [selectedFriend])
 
   const statusText = useMemo(() => (isLoaded ? 'You are in' : 'Starting up...'), [isLoaded])
   const authSubmitText = useMemo(() => (authMode === 'signin' ? 'Sign in' : 'Create account'), [authMode])
@@ -284,32 +314,19 @@ function App() {
   useEffect(() => {
     if (!user || !authToken) return
 
-    loadSocialData()
-
-    const socialSocket = io('/social', {
-      transports: ['polling'],
-      upgrade: false,
-      auth: {
-        access_token: authToken,
-      },
-    })
-
-    socialSocket.on('social_refresh', () => {
-      loadSocialData()
-    })
-
-    socialSocket.on('connect', () => {
-      loadSocialData()
-    })
-
-    socialSocket.on('connect_error', () => {
-      setSocialError('Realtime social connection unavailable. Using fallback transport.')
-    })
-
-    return () => {
-      socialSocket.disconnect()
+    let cancelled = false
+    const refreshSocialState = async () => {
+      if (cancelled) return
+      await loadSocialData()
     }
-  }, [loadSocialData, user, authToken])
+
+    refreshSocialState()
+    const timer = window.setInterval(refreshSocialState, 20000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [authToken, loadSocialData, user])
 
   const loadConversation = async (friendUsername) => {
     if (!friendUsername) return
@@ -317,6 +334,12 @@ function App() {
       const data = await apiRequest(`/social/chats/${encodeURIComponent(friendUsername)}/messages`)
       setSelectedFriend(friendUsername)
       setDmMessages(data.messages || [])
+      setDmTypingUsers((current) => {
+        const next = { ...current }
+        delete next[String(friendUsername || '').toLowerCase()]
+        return next
+      })
+
       setConversations((current) =>
         current.map((row) =>
           row.friend.username === friendUsername
@@ -331,6 +354,23 @@ function App() {
       setSocialError(err.message || 'Failed to load direct messages.')
     }
   }
+
+  useEffect(() => {
+    if (!user || !authToken || !selectedFriend) return
+
+    let cancelled = false
+    const refreshConversation = async () => {
+      if (cancelled) return
+      await loadConversation(selectedFriend)
+    }
+
+    refreshConversation()
+    const timer = window.setInterval(refreshConversation, 10000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [authToken, loadConversation, selectedFriend, user])
 
   const handleSearchUsers = async () => {
     const q = searchQuery.trim()
@@ -370,22 +410,143 @@ function App() {
     }
   }
 
-  const sendDirectMessage = async () => {
-    const clean = dmInput.trim()
-    if (!selectedFriend || !clean) return
+  const sendTypingState = useCallback(
+    () => {},
+    [],
+  )
+
+  const stopTypingSignal = useCallback(() => {
+    if (typingStopTimerRef.current) {
+      window.clearTimeout(typingStopTimerRef.current)
+      typingStopTimerRef.current = null
+    }
+    sendTypingState(false)
+  }, [sendTypingState])
+
+  const queueTypingSignal = useCallback(() => {
+    sendTypingState(true)
+    if (typingStopTimerRef.current) {
+      window.clearTimeout(typingStopTimerRef.current)
+    }
+    typingStopTimerRef.current = window.setTimeout(() => {
+      sendTypingState(false)
+      typingStopTimerRef.current = null
+    }, 1500)
+  }, [sendTypingState])
+
+  const sendDirectMessage = async ({ message = '', type = 'text', fileUrl = '' } = {}) => {
+    const clean = String(message || '').trim()
+    if (!selectedFriend) return
+    if (type === 'text' && !clean) return
+    if (type === 'voice' && !fileUrl) return
 
     try {
       const data = await apiRequest(`/social/chats/${encodeURIComponent(selectedFriend)}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ message: clean }),
+        body: JSON.stringify({ message: clean, type, file_url: fileUrl }),
       })
-      setDmMessages((current) => [...current, data.message])
+      setDmMessages((current) => {
+        if (current.some((row) => row.id === data.message?.id)) return current
+        return [...current, data.message]
+      })
+      setConversations((current) =>
+        current.map((row) =>
+          row.friend.username === selectedFriend
+            ? {
+                ...row,
+                last_message: data.message,
+              }
+            : row,
+        ),
+      )
       setDmInput('')
+      stopTypingSignal()
       await loadSocialData()
     } catch (err) {
       setSocialError(err.message || 'Could not send message.')
     }
   }
+
+  const uploadVoiceBlob = useCallback(
+    async (blob) => {
+      if (!authToken) throw new Error('Missing auth token for upload.')
+
+      const form = new FormData()
+      const filename = `voice-${Date.now()}.webm`
+      form.append('file', new File([blob], filename, { type: blob.type || 'audio/webm' }))
+
+      const response = await fetch('/upload', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          'X-Room-Key': 'dm',
+        },
+        body: form,
+      })
+
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || !data?.file_url) {
+        throw new Error(data?.error || 'Voice upload failed.')
+      }
+      return data.file_url
+    },
+    [authToken],
+  )
+
+  const stopVoiceRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder || recorder.state === 'inactive') return
+    recorder.stop()
+  }, [])
+
+  const startVoiceRecording = useCallback(async () => {
+    if (voiceUploading || voiceRecording || !selectedFriend) return
+    setVoiceError('')
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      mediaStreamRef.current = stream
+
+      const recorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = recorder
+      voiceChunksRef.current = []
+
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) {
+          voiceChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onstop = async () => {
+        setVoiceRecording(false)
+        const trackStream = mediaStreamRef.current
+        if (trackStream) {
+          trackStream.getTracks().forEach((track) => track.stop())
+          mediaStreamRef.current = null
+        }
+
+        const chunks = voiceChunksRef.current
+        voiceChunksRef.current = []
+        if (!chunks.length) return
+
+        try {
+          setVoiceUploading(true)
+          const blob = new Blob(chunks, { type: 'audio/webm' })
+          const fileUrl = await uploadVoiceBlob(blob)
+          await sendDirectMessage({ type: 'voice', fileUrl })
+        } catch (err) {
+          setVoiceError(err.message || 'Unable to send voice note.')
+        } finally {
+          setVoiceUploading(false)
+        }
+      }
+
+      recorder.start()
+      setVoiceRecording(true)
+    } catch (err) {
+      setVoiceError(err.message || 'Microphone permission is required for voice notes.')
+    }
+  }, [selectedFriend, sendDirectMessage, uploadVoiceBlob, voiceRecording, voiceUploading])
 
   const markNotificationsRead = async () => {
     try {
@@ -448,6 +609,10 @@ function App() {
     setConversations([])
     setSelectedFriend('')
     setDmMessages([])
+    setDmTypingUsers({})
+    setVoiceRecording(false)
+    setVoiceUploading(false)
+    setVoiceError('')
   }
 
   const handleAuthSubmit = async (event) => {
@@ -524,6 +689,20 @@ function App() {
       setAuthLoading(false)
     }
   }
+
+  useEffect(() => {
+    return () => {
+      if (typingStopTimerRef.current) {
+        window.clearTimeout(typingStopTimerRef.current)
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop()
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop())
+      }
+    }
+  }, [])
 
   if (!user) {
     return (
@@ -855,64 +1034,131 @@ function App() {
               )}
 
               {socialTab === 'messages' && (
-                <div className="social-panel dm-layout">
-                  <aside className="dm-sidebar">
-                    {conversations.length === 0 ? (
-                      <p className="social-muted">Start by adding friends.</p>
-                    ) : (
-                      conversations.map((convo) => (
-                        <button
-                          key={convo.friend.username}
-                          type="button"
-                          className={`dm-thread ${selectedFriend === convo.friend.username ? 'active' : ''}`}
-                          onClick={() => loadConversation(convo.friend.username)}
-                        >
-                          <strong>{convo.friend.display_name}</strong>
-                          <span>{convo.last_message?.message || 'No messages yet'}</span>
-                          {convo.unread > 0 && <em>{convo.unread} new</em>}
-                        </button>
-                      ))
-                    )}
-                  </aside>
-
-                  <div className="dm-main">
-                    <div className="dm-messages">
-                      {selectedFriend ? (
-                        dmMessages.length === 0 ? (
-                          <p className="social-muted">No messages yet with this friend.</p>
-                        ) : (
-                          dmMessages.map((message) => (
-                            <div
-                              key={message.id}
-                              className={`dm-bubble ${message.sender_username === userEmail ? 'mine' : ''}`}
-                            >
-                              <p>{message.message}</p>
-                              <span>{new Date(message.created_at).toLocaleString()}</span>
-                            </div>
-                          ))
-                        )
-                      ) : (
-                        <p className="social-muted">Select a friend conversation.</p>
-                      )}
+                <div className="social-panel dm-dashboard">
+                  <div className="dm-hero-strip">
+                    <div>
+                      <h3>Direct messages</h3>
+                      <p>Live presence, typing, read receipts, and voice notes.</p>
                     </div>
+                    <button type="button" className="ghost-button" onClick={() => setShowChatStage(true)}>
+                      Open watch party room
+                    </button>
+                  </div>
 
-                    <div className="dm-composer">
-                      <input
-                        className="auth-input"
-                        value={dmInput}
-                        onChange={(event) => setDmInput(event.target.value)}
-                        placeholder={selectedFriend ? 'Type a direct message...' : 'Select a conversation first'}
-                        disabled={!selectedFriend}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault()
-                            sendDirectMessage()
-                          }
-                        }}
-                      />
-                      <button type="button" className="primary-button" disabled={!selectedFriend} onClick={sendDirectMessage}>
-                        Send
-                      </button>
+                  <div className="dm-layout">
+                    <aside className="dm-sidebar">
+                      {conversations.length === 0 ? (
+                        <p className="social-muted">Start by adding friends.</p>
+                      ) : (
+                        conversations.map((convo) => {
+                          const status = convo?.friend?.presence?.status || 'offline'
+                          const isActive = selectedFriend === convo.friend.username
+                          return (
+                            <button
+                              key={convo.friend.username}
+                              type="button"
+                              className={`dm-thread ${isActive ? 'active' : ''}`}
+                              onClick={() => loadConversation(convo.friend.username)}
+                            >
+                              <div className="dm-thread-top">
+                                <strong>{convo.friend.display_name}</strong>
+                                <span className={`dm-status-dot ${status}`} aria-hidden="true" />
+                              </div>
+                              <span>{convo.last_message?.type === 'voice' ? 'Voice note' : convo.last_message?.message || 'No messages yet'}</span>
+                              <div className="dm-thread-meta">
+                                <em className={`dm-status-chip ${status}`}>{status}</em>
+                                {convo.unread > 0 && <em className="dm-unread-chip">{convo.unread} new</em>}
+                              </div>
+                            </button>
+                          )
+                        })
+                      )}
+                    </aside>
+
+                    <div className="dm-main">
+                      <header className="dm-main-header">
+                        {selectedFriend ? (
+                          <>
+                            <div>
+                              <h4>{selectedConversation?.friend?.display_name || selectedFriend}</h4>
+                              <p>{formatLastActive(selectedFriendPresence.last_active)}</p>
+                            </div>
+                            <span className={`dm-presence-pill ${selectedFriendPresence.status || 'offline'}`}>
+                              {selectedFriendPresence.status || 'offline'}
+                            </span>
+                          </>
+                        ) : (
+                          <h4>Select a conversation</h4>
+                        )}
+                      </header>
+
+                      <div className="dm-messages">
+                        {selectedFriend ? (
+                          dmMessages.length === 0 ? (
+                            <p className="social-muted">No messages yet with this friend.</p>
+                          ) : (
+                            dmMessages.map((message) => {
+                              const mine = String(message.sender_username || '').toLowerCase() === currentUsername
+                              return (
+                                <div key={message.id} className={`dm-bubble ${mine ? 'mine' : ''}`}>
+                                  {message.type === 'voice' && message.file_url ? (
+                                    <audio controls preload="metadata" src={message.file_url} className="dm-voice-player" />
+                                  ) : (
+                                    <p>{message.message}</p>
+                                  )}
+                                  <div className="dm-bubble-meta">
+                                    <span>{new Date(message.created_at).toLocaleString()}</span>
+                                    {mine && (
+                                      <span className="dm-read-state">{message.read_at ? 'Seen' : 'Sent'}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              )
+                            })
+                          )
+                        ) : (
+                          <p className="social-muted">Select a friend conversation.</p>
+                        )}
+                        {selectedFriend && dmTypingUsers[selectedFriend] && (
+                          <p className="dm-typing-indicator">{selectedConversation?.friend?.display_name || selectedFriend} is typing...</p>
+                        )}
+                      </div>
+
+                      <div className="dm-composer">
+                        <input
+                          className="auth-input"
+                          value={dmInput}
+                          onChange={(event) => {
+                            setDmInput(event.target.value)
+                            queueTypingSignal()
+                          }}
+                          placeholder={selectedFriend ? 'Type a direct message...' : 'Select a conversation first'}
+                          disabled={!selectedFriend}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault()
+                              sendDirectMessage({ message: dmInput, type: 'text' })
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          disabled={!selectedFriend || voiceUploading}
+                          onClick={voiceRecording ? stopVoiceRecording : startVoiceRecording}
+                        >
+                          {voiceUploading ? 'Uploading...' : voiceRecording ? 'Stop voice' : 'Voice note'}
+                        </button>
+                        <button
+                          type="button"
+                          className="primary-button"
+                          disabled={!selectedFriend || !dmInput.trim()}
+                          onClick={() => sendDirectMessage({ message: dmInput, type: 'text' })}
+                        >
+                          Send
+                        </button>
+                      </div>
+                      {voiceError && <p className="social-error">{voiceError}</p>}
                     </div>
                   </div>
                 </div>

@@ -28,6 +28,15 @@ DATABASE_URI = (
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+REDIS_URL = os.environ.get("REDIS_URL", "").strip()
+
+MESSAGE_RATE_LIMIT_COUNT = int(os.environ.get("MESSAGE_RATE_LIMIT_COUNT", "8").strip() or "8")
+MESSAGE_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("MESSAGE_RATE_LIMIT_WINDOW_SECONDS", "5").strip() or "5")
+
+if MESSAGE_RATE_LIMIT_COUNT < 1:
+    MESSAGE_RATE_LIMIT_COUNT = 1
+if MESSAGE_RATE_LIMIT_WINDOW_SECONDS < 1:
+    MESSAGE_RATE_LIMIT_WINDOW_SECONDS = 1
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be configured")

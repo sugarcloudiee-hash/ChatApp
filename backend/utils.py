@@ -36,12 +36,8 @@ def _extract_room_key() -> str:
 def _extract_access_token() -> str:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.lower().startswith("bearer "):
-        token = auth_header[7:].strip()
-        print(f"[TOKEN] Extracted from Authorization header: {token[:20]}...")
-        return token
+        return auth_header[7:].strip()
     token = (request.args.get("access_token") or "").strip()
-    if token:
-        print(f"[TOKEN] Extracted from query param: {token[:20]}...")
     return token
 
 
