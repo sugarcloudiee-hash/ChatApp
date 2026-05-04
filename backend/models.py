@@ -1,186 +1,99 @@
+"""
+Database models for users, rooms, messages.
+"""
 from datetime import datetime
-
 from backend.extensions import db
-from sqlalchemy import inspect, text, UniqueConstraint
 
 
 class User(db.Model):
+    __tablename__ = "user"
+    
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(64), unique=True, nullable=False)
-    email = db.Column(db.String(128), unique=True, nullable=False)
+    username = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    email = db.Column(db.String(128), unique=True, nullable=False, index=True)
     display_name = db.Column(db.String(128), nullable=False)
     avatar = db.Column(db.String(32), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    sessions = db.relationship("Session", backref="user", lazy=True)
-
+    last_seen = db.Column(db.DateTime, default=datetime.utcnow)
+    theme = db.Column(db.String(10), default='dark')
+    
     def to_dict(self):
         return {
+            "id": self.id,
             "username": self.username,
             "email": self.email,
             "display_name": self.display_name,
             "avatar": self.avatar,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "theme": self.theme
         }
 
 
-def ensure_user_email_column():
-    table_name = User.__tablename__
-    inspector = inspect(db.engine)
-    columns = {column["name"] for column in inspector.get_columns(table_name)}
-
-    if "email" not in columns:
-        db.session.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN email VARCHAR(128)'))
-
-    db.session.execute(
-        text(f'CREATE UNIQUE INDEX IF NOT EXISTS ix_{table_name}_email ON "{table_name}" (email)')
-    )
-    db.session.commit()
-
-
-class Session(db.Model):
-    token = db.Column(db.String(64), primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    expires_at = db.Column(db.DateTime, nullable=True)
-
-    def is_valid(self) -> bool:
-        return self.expires_at is None or self.expires_at > datetime.utcnow()
-
-
 class Room(db.Model):
+    __tablename__ = "room"
+    
     id = db.Column(db.Integer, primary_key=True)
     room_key = db.Column(db.String(64), unique=True, nullable=False, index=True)
-    host_username = db.Column(db.String(64), nullable=False)
+    host_username = db.Column(db.String(64), nullable=False, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    locked = db.Column(db.Boolean, default=False)
-    max_members = db.Column(db.Integer, default=10)
+    is_active = db.Column(db.Boolean, default=True)
+    max_members = db.Column(db.Integer, default=2)
+    room_type = db.Column(db.String(16), default='study')
+    
+    members = db.relationship('RoomMember', backref='room', cascade='all, delete-orphan', lazy=True)
+    messages = db.relationship('Message', backref='room', cascade='all, delete-orphan', lazy=True)
+    
+    def to_dict(self):
+        return {
+            "room_key": self.room_key,
+            "host_username": self.host_username,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "is_active": self.is_active,
+            "room_type": self.room_type,
+            "member_count": len(self.members) if self.members else 0
+        }
+
+
+class RoomMember(db.Model):
+    __tablename__ = "room_member"
+    
+    id = db.Column(db.Integer, primary_key=True)
+    room_key = db.Column(db.String(64), db.ForeignKey("room.room_key", ondelete="CASCADE"), nullable=False, index=True)
+    username = db.Column(db.String(64), nullable=False, index=True)
+    display_name = db.Column(db.String(128))
+    role = db.Column(db.String(32), default='member')
+    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+    is_online = db.Column(db.Boolean, default=False)
 
 
 class Message(db.Model):
+    __tablename__ = "message"
+    
     id = db.Column(db.String(32), primary_key=True)
-    room_key = db.Column(db.String(64), nullable=False, index=True)
+    room_key = db.Column(db.String(64), db.ForeignKey("room.room_key", ondelete="CASCADE"), nullable=False, index=True)
     sender_username = db.Column(db.String(64), nullable=False)
     display_name = db.Column(db.String(128), nullable=False)
     avatar = db.Column(db.String(32), nullable=False)
-    message = db.Column(db.Text, default="")
-    type = db.Column(db.String(16), default="text")
+    message = db.Column(db.Text, nullable=True)
+    message_type = db.Column(db.String(16), default='text')
     file_url = db.Column(db.String(256), nullable=True)
     timestamp = db.Column(db.String(32), nullable=False)
     edited = db.Column(db.Boolean, default=False)
     deleted = db.Column(db.Boolean, default=False)
-    reactions = db.Column(db.JSON, nullable=False, default=dict)
-    reads = db.Column(db.JSON, nullable=False, default=dict)
-
+    reactions = db.Column(db.JSON, default=dict, nullable=False)
+    
     def to_dict(self):
         return {
             "id": self.id,
-            "sender": self.sender_username,
+            "room_key": self.room_key,
+            "sender_username": self.sender_username,
             "display_name": self.display_name,
             "avatar": self.avatar,
-            "message": self.message,
-            "type": self.type,
+            "message": self.message if not self.deleted else "[Message deleted]",
+            "message_type": self.message_type,
             "file_url": self.file_url,
             "timestamp": self.timestamp,
             "edited": self.edited,
             "deleted": self.deleted,
             "reactions": self.reactions or {},
-            "reads": self.reads or {},
-        }
-
-
-class FriendRequest(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    sender_username = db.Column(db.String(64), nullable=False, index=True)
-    receiver_username = db.Column(db.String(64), nullable=False, index=True)
-    status = db.Column(db.String(16), nullable=False, default="pending", index=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    responded_at = db.Column(db.DateTime, nullable=True)
-
-    __table_args__ = (
-        UniqueConstraint("sender_username", "receiver_username", name="uq_friend_request_pair_fr"),
-    )
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "sender_username": self.sender_username,
-            "receiver_username": self.receiver_username,
-            "status": self.status,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "responded_at": self.responded_at.isoformat() if self.responded_at else None,
-        }
-
-
-class Friendship(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_a = db.Column(db.String(64), nullable=False, index=True)
-    user_b = db.Column(db.String(64), nullable=False, index=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("user_a", "user_b", name="uq_friendship_pair_fs"),
-    )
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "user_a": self.user_a,
-            "user_b": self.user_b,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-        }
-
-
-class DirectMessage(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    sender_username = db.Column(db.String(64), nullable=False, index=True)
-    receiver_username = db.Column(db.String(64), nullable=False, index=True)
-    message = db.Column(db.Text, nullable=False, default="")
-    type = db.Column(db.String(16), nullable=False, default="text")
-    file_url = db.Column(db.String(256), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
-    read_at = db.Column(db.DateTime, nullable=True)
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "sender_username": self.sender_username,
-            "receiver_username": self.receiver_username,
-            "message": self.message,
-            "type": self.type,
-            "file_url": self.file_url,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "read_at": self.read_at.isoformat() if self.read_at else None,
-        }
-
-
-def ensure_direct_message_columns():
-    table_name = DirectMessage.__tablename__
-    inspector = inspect(db.engine)
-    columns = {column["name"] for column in inspector.get_columns(table_name)}
-
-    if "type" not in columns:
-        db.session.execute(text(f"ALTER TABLE \"{table_name}\" ADD COLUMN type VARCHAR(16) DEFAULT 'text'"))
-        db.session.execute(text(f"UPDATE \"{table_name}\" SET type = 'text' WHERE type IS NULL"))
-
-    if "file_url" not in columns:
-        db.session.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN file_url VARCHAR(256)'))
-
-    db.session.commit()
-
-
-class Notification(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(64), nullable=False, index=True)
-    kind = db.Column(db.String(32), nullable=False)
-    payload = db.Column(db.JSON, nullable=False, default=dict)
-    is_read = db.Column(db.Boolean, nullable=False, default=False, index=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "username": self.username,
-            "kind": self.kind,
-            "payload": self.payload or {},
-            "is_read": bool(self.is_read),
-            "created_at": self.created_at.isoformat() if self.created_at else None,
         }

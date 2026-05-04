@@ -1,1201 +1,677 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createClient } from '@supabase/supabase-js'
+import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import { SocketProvider, useSocket } from './SocketContext';
+import ChatPanel from './components/ChatPanel';
+import PomodoroTimer from './components/PomodoroTimer';
+import VideoPlayer from './components/VideoPlayer';
+import SharedNotes from './components/SharedNotes';
+import TaskBoard from './components/TaskBoard';
 
-let supabaseClient = null
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-const formatLastActive = (epochSeconds) => {
-  const value = Number(epochSeconds || 0)
-  if (!value) return 'Last active unavailable'
-  const delta = Math.max(0, Math.floor(Date.now() / 1000 - value))
-  if (delta < 60) return 'Active just now'
-  if (delta < 3600) return `Active ${Math.floor(delta / 60)}m ago`
-  if (delta < 86400) return `Active ${Math.floor(delta / 3600)}h ago`
-  return `Active ${Math.floor(delta / 86400)}d ago`
-}
+// ============== AUTH VIEW ==============
+function AuthView() {
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-const getSupabaseClient = () => {
-  const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || window.SUPABASE_URL || ''
-  const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || window.SUPABASE_ANON_KEY || ''
-
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    console.warn('Supabase credentials not found, theme sync disabled')
-    return null
-  }
-
-  if (!supabaseClient) {
-    supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-  }
-
-  return supabaseClient
-}
-
-function App() {
-  const [frameKey, setFrameKey] = useState(0)
-  const [isLoaded, setIsLoaded] = useState(false)
-  const [showChatStage, setShowChatStage] = useState(false)
-  const [theme, setTheme] = useState('dark')
-  const [user, setUser] = useState(null)
-  const [userEmail, setUserEmail] = useState(null)
-  const [authToken, setAuthToken] = useState('')
-  const [supabaseReady, setSupabaseReady] = useState(false)
-  const [authMode, setAuthMode] = useState('signin')
-  const [authLoading, setAuthLoading] = useState(false)
-  const [authError, setAuthError] = useState('')
-  const [authSuccess, setAuthSuccess] = useState('')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
-
-  const [socialTab, setSocialTab] = useState('messages')
-  const [socialLoading, setSocialLoading] = useState(false)
-  const [socialError, setSocialError] = useState('')
-  const [notifications, setNotifications] = useState([])
-  const [friends, setFriends] = useState([])
-  const [incomingRequests, setIncomingRequests] = useState([])
-  const [outgoingRequests, setOutgoingRequests] = useState([])
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState([])
-  const [conversations, setConversations] = useState([])
-  const [selectedFriend, setSelectedFriend] = useState('')
-  const [dmMessages, setDmMessages] = useState([])
-  const [dmInput, setDmInput] = useState('')
-  const [dmTypingUsers, setDmTypingUsers] = useState({})
-  const [voiceRecording, setVoiceRecording] = useState(false)
-  const [voiceUploading, setVoiceUploading] = useState(false)
-  const [voiceError, setVoiceError] = useState('')
-
-  const selectedFriendRef = useRef('')
-  const typingStopTimerRef = useRef(null)
-  const mediaRecorderRef = useRef(null)
-  const voiceChunksRef = useRef([])
-  const mediaStreamRef = useRef(null)
-
-  const currentUsername = useMemo(() => String(userEmail || '').trim().toLowerCase(), [userEmail])
-  const selectedConversation = useMemo(
-    () => conversations.find((row) => row.friend.username === selectedFriend) || null,
-    [conversations, selectedFriend],
-  )
-  const selectedFriendPresence = selectedConversation?.friend?.presence || { status: 'offline', last_active: 0 }
-
-  useEffect(() => {
-    selectedFriendRef.current = selectedFriend
-  }, [selectedFriend])
-
-  const statusText = useMemo(() => (isLoaded ? 'You are in' : 'Starting up...'), [isLoaded])
-  const authSubmitText = useMemo(() => (authMode === 'signin' ? 'Sign in' : 'Create account'), [authMode])
-  const snowflakes = useMemo(() => Array.from({ length: 28 }, (_, index) => index), [])
-  const unreadCount = useMemo(
-    () => notifications.filter((item) => !item.is_read).length,
-    [notifications],
-  )
-
-  const applyTheme = (nextTheme) => {
-    setTheme(nextTheme)
-    document.documentElement.setAttribute('data-theme', nextTheme)
-  }
-
-  const loadThemeByEmail = async (client, emailValue) => {
-    if (!client || !emailValue) {
-      return
-    }
-
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
     try {
-      const { data: userData, error } = await client
-        .from('user')
-        .select('theme')
-        .eq('email', emailValue)
-        .single()
-
-      if (!error && userData?.theme) {
-        applyTheme(userData.theme)
-      }
-    } catch (err) {
-      console.warn('Theme fetch failed:', err)
-    }
-  }
-
-  useEffect(() => {
-    const handleThemeRequest = (event) => {
-      if (event.data && event.data.type === 'THEME_REQUEST') {
-        const iframe = document.querySelector('.legacy-frame')
-        if (iframe && iframe.contentWindow) {
-          iframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme }, '*')
-        }
-      }
-    }
-
-    window.addEventListener('message', handleThemeRequest)
-    return () => window.removeEventListener('message', handleThemeRequest)
-  }, [theme])
-
-  useEffect(() => {
-    const iframe = document.querySelector('.legacy-frame')
-    if (iframe && iframe.contentWindow) {
-      iframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme }, '*')
-    }
-  }, [theme, isLoaded])
-
-  useEffect(() => {
-    let isMounted = true
-    let authSubscription = null
-
-    const bootstrapSession = async () => {
-      const client = getSupabaseClient()
-
-      if (!client) {
-        if (isMounted) {
-          applyTheme('dark')
-          setSupabaseReady(false)
-          setAuthToken('')
-        }
-        return
-      }
-
-      if (isMounted) {
-        setSupabaseReady(true)
-      }
-
-      try {
-        const {
-          data: { session },
-          error: sessionError,
-        } = await client.auth.getSession()
-
-        if (sessionError) {
-          console.warn('Session error:', sessionError)
-          applyTheme('dark')
-          return
-        }
-
-        if (session?.user) {
-          const activeEmail = session.user.email || ''
-          if (isMounted) {
-            setUser(session.user)
-            setUserEmail(activeEmail)
-            const token = session.access_token || ''
-            setAuthToken(token)
-          }
-          if (isMounted) {
-            await loadThemeByEmail(client, activeEmail)
-          }
-        } else if (isMounted) {
-          applyTheme('dark')
-          setAuthToken('')
-        }
-      } catch (err) {
-        console.warn('Session bootstrap failed:', err)
-        if (isMounted) {
-          applyTheme('dark')
-          setAuthToken('')
-        }
-      }
-
-      const { data: authListener } = client.auth.onAuthStateChange(async (_event, session) => {
-        if (!isMounted) {
-          return
-        }
-
-        if (!session?.user) {
-          setUser(null)
-          setUserEmail(null)
-          setAuthToken('')
-          setIsLoaded(false)
-          return
-        }
-
-        const activeEmail = session.user.email || ''
-        setUser(session.user)
-        setUserEmail(activeEmail)
-        const token = session.access_token || ''
-        setAuthToken(token)
-        await loadThemeByEmail(client, activeEmail)
-      })
-
-      authSubscription = authListener.subscription
-    }
-
-    bootstrapSession()
-
-    return () => {
-      isMounted = false
-      if (authSubscription) {
-        authSubscription.unsubscribe()
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    const client = getSupabaseClient()
-    if (!client || !supabaseReady || !userEmail) return
-
-    const themeSubscription = client
-      .channel(`theme-changes-${userEmail}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'user',
-          filter: `email=eq.${userEmail}`,
-        },
-        (payload) => {
-          if (payload.new && payload.new.theme) {
-            const newTheme = payload.new.theme
-            applyTheme(newTheme)
-          }
-        },
-      )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('Theme sync subscription active')
-        }
-      })
-
-    return () => {
-      try {
-        themeSubscription.unsubscribe()
-      } catch (err) {
-        console.warn('Theme subscription cleanup failed:', err)
-      }
-    }
-  }, [supabaseReady, userEmail])
-
-  const apiRequest = useCallback(
-    async (path, options = {}) => {
-      if (!authToken) {
-        throw new Error('Missing auth session token.')
-      }
-
-      const response = await fetch(path, {
-        ...options,
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-          ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-          ...(options.headers || {}),
-        },
-      })
-
-      const data = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        throw new Error(data?.error || `Request failed (${response.status})`)
-      }
-      return data
-    },
-    [authToken],
-  )
-
-  const loadSocialData = useCallback(async () => {
-    if (!user || !authToken) {
-      return
-    }
-
-    setSocialLoading(true)
-    setSocialError('')
-    try {
-      const [friendsData, requestData, notificationData, chatsData] = await Promise.all([
-        apiRequest('/social/friends'),
-        apiRequest('/social/friend-requests'),
-        apiRequest('/social/notifications?limit=50'),
-        apiRequest('/social/chats'),
-      ])
-
-      setFriends(friendsData.friends || [])
-      setIncomingRequests(requestData.incoming || [])
-      setOutgoingRequests(requestData.outgoing || [])
-      setNotifications(notificationData.notifications || [])
-      setConversations(chatsData.conversations || [])
-    } catch (err) {
-      setSocialError(err.message || 'Failed to load social data.')
-    } finally {
-      setSocialLoading(false)
-    }
-  }, [apiRequest, authToken, user])
-
-  useEffect(() => {
-    if (!user || !authToken) return
-
-    let cancelled = false
-    const refreshSocialState = async () => {
-      if (cancelled) return
-      await loadSocialData()
-    }
-
-    refreshSocialState()
-    const timer = window.setInterval(refreshSocialState, 20000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [authToken, loadSocialData, user])
-
-  const loadConversation = async (friendUsername) => {
-    if (!friendUsername) return
-    try {
-      const data = await apiRequest(`/social/chats/${encodeURIComponent(friendUsername)}/messages`)
-      setSelectedFriend(friendUsername)
-      setDmMessages(data.messages || [])
-      setDmTypingUsers((current) => {
-        const next = { ...current }
-        delete next[String(friendUsername || '').toLowerCase()]
-        return next
-      })
-
-      setConversations((current) =>
-        current.map((row) =>
-          row.friend.username === friendUsername
-            ? {
-                ...row,
-                unread: 0,
-              }
-            : row,
-        ),
-      )
-    } catch (err) {
-      setSocialError(err.message || 'Failed to load direct messages.')
-    }
-  }
-
-  useEffect(() => {
-    if (!user || !authToken || !selectedFriend) return
-
-    let cancelled = false
-    const refreshConversation = async () => {
-      if (cancelled) return
-      await loadConversation(selectedFriend)
-    }
-
-    refreshConversation()
-    const timer = window.setInterval(refreshConversation, 10000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [authToken, loadConversation, selectedFriend, user])
-
-  const handleSearchUsers = async () => {
-    const q = searchQuery.trim()
-    if (q.length < 2) {
-      setSearchResults([])
-      return
-    }
-
-    try {
-      const data = await apiRequest(`/social/users/search?q=${encodeURIComponent(q)}`)
-      setSearchResults(data.users || [])
-    } catch (err) {
-      setSocialError(err.message || 'User search failed.')
-    }
-  }
-
-  const sendFriendRequest = async (usernameValue) => {
-    try {
-      await apiRequest('/social/friend-requests', {
-        method: 'POST',
-        body: JSON.stringify({ username: usernameValue }),
-      })
-      await loadSocialData()
-    } catch (err) {
-      setSocialError(err.message || 'Could not send friend request.')
-    }
-  }
-
-  const respondToRequest = async (requestId, action) => {
-    try {
-      await apiRequest(`/social/friend-requests/${requestId}/${action}`, {
-        method: 'POST',
-      })
-      await loadSocialData()
-    } catch (err) {
-      setSocialError(err.message || 'Could not process friend request.')
-    }
-  }
-
-  const sendTypingState = useCallback(
-    () => {},
-    [],
-  )
-
-  const stopTypingSignal = useCallback(() => {
-    if (typingStopTimerRef.current) {
-      window.clearTimeout(typingStopTimerRef.current)
-      typingStopTimerRef.current = null
-    }
-    sendTypingState(false)
-  }, [sendTypingState])
-
-  const queueTypingSignal = useCallback(() => {
-    sendTypingState(true)
-    if (typingStopTimerRef.current) {
-      window.clearTimeout(typingStopTimerRef.current)
-    }
-    typingStopTimerRef.current = window.setTimeout(() => {
-      sendTypingState(false)
-      typingStopTimerRef.current = null
-    }, 1500)
-  }, [sendTypingState])
-
-  const sendDirectMessage = async ({ message = '', type = 'text', fileUrl = '' } = {}) => {
-    const clean = String(message || '').trim()
-    if (!selectedFriend) return
-    if (type === 'text' && !clean) return
-    if (type === 'voice' && !fileUrl) return
-
-    try {
-      const data = await apiRequest(`/social/chats/${encodeURIComponent(selectedFriend)}/messages`, {
-        method: 'POST',
-        body: JSON.stringify({ message: clean, type, file_url: fileUrl }),
-      })
-      setDmMessages((current) => {
-        if (current.some((row) => row.id === data.message?.id)) return current
-        return [...current, data.message]
-      })
-      setConversations((current) =>
-        current.map((row) =>
-          row.friend.username === selectedFriend
-            ? {
-                ...row,
-                last_message: data.message,
-              }
-            : row,
-        ),
-      )
-      setDmInput('')
-      stopTypingSignal()
-      await loadSocialData()
-    } catch (err) {
-      setSocialError(err.message || 'Could not send message.')
-    }
-  }
-
-  const uploadVoiceBlob = useCallback(
-    async (blob) => {
-      if (!authToken) throw new Error('Missing auth token for upload.')
-
-      const form = new FormData()
-      const filename = `voice-${Date.now()}.webm`
-      form.append('file', new File([blob], filename, { type: blob.type || 'audio/webm' }))
-
-      const response = await fetch('/upload', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-          'X-Room-Key': 'dm',
-        },
-        body: form,
-      })
-
-      const data = await response.json().catch(() => ({}))
-      if (!response.ok || !data?.file_url) {
-        throw new Error(data?.error || 'Voice upload failed.')
-      }
-      return data.file_url
-    },
-    [authToken],
-  )
-
-  const stopVoiceRecording = useCallback(() => {
-    const recorder = mediaRecorderRef.current
-    if (!recorder || recorder.state === 'inactive') return
-    recorder.stop()
-  }, [])
-
-  const startVoiceRecording = useCallback(async () => {
-    if (voiceUploading || voiceRecording || !selectedFriend) return
-    setVoiceError('')
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      mediaStreamRef.current = stream
-
-      const recorder = new MediaRecorder(stream)
-      mediaRecorderRef.current = recorder
-      voiceChunksRef.current = []
-
-      recorder.ondataavailable = (event) => {
-        if (event.data?.size) {
-          voiceChunksRef.current.push(event.data)
-        }
-      }
-
-      recorder.onstop = async () => {
-        setVoiceRecording(false)
-        const trackStream = mediaStreamRef.current
-        if (trackStream) {
-          trackStream.getTracks().forEach((track) => track.stop())
-          mediaStreamRef.current = null
-        }
-
-        const chunks = voiceChunksRef.current
-        voiceChunksRef.current = []
-        if (!chunks.length) return
-
-        try {
-          setVoiceUploading(true)
-          const blob = new Blob(chunks, { type: 'audio/webm' })
-          const fileUrl = await uploadVoiceBlob(blob)
-          await sendDirectMessage({ type: 'voice', fileUrl })
-        } catch (err) {
-          setVoiceError(err.message || 'Unable to send voice note.')
-        } finally {
-          setVoiceUploading(false)
-        }
-      }
-
-      recorder.start()
-      setVoiceRecording(true)
-    } catch (err) {
-      setVoiceError(err.message || 'Microphone permission is required for voice notes.')
-    }
-  }, [selectedFriend, sendDirectMessage, uploadVoiceBlob, voiceRecording, voiceUploading])
-
-  const markNotificationsRead = async () => {
-    try {
-      await apiRequest('/social/notifications/read-all', { method: 'POST' })
-      setNotifications((current) => current.map((item) => ({ ...item, is_read: true })))
-    } catch (err) {
-      setSocialError(err.message || 'Could not mark notifications as read.')
-    }
-  }
-
-  const toggleTheme = async () => {
-    const newTheme = theme === 'dark' ? 'light' : 'dark'
-    applyTheme(newTheme)
-
-    if (authToken && userEmail) {
-      try {
-        await apiRequest('/theme', {
-          method: 'PATCH',
-          body: JSON.stringify({ theme: newTheme }),
-        })
-      } catch (err) {
-        console.warn('Failed to save theme preference:', err)
-      }
-    }
-  }
-
-  const handleReload = () => {
-    setIsLoaded(false)
-    setFrameKey((current) => current + 1)
-  }
-
-  const handleSignOut = async () => {
-    const client = getSupabaseClient()
-
-    if (!client) {
-      setUser(null)
-      setUserEmail(null)
-      setAuthToken('')
-      return
-    }
-
-    try {
-      const { error } = await client.auth.signOut()
-      if (error) {
-        console.warn('Sign out failed:', error)
-      }
-    } catch (err) {
-      console.warn('Sign out failed:', err)
-    }
-
-    setUser(null)
-    setUserEmail(null)
-    setAuthToken('')
-    setIsLoaded(false)
-    setShowChatStage(false)
-    setNotifications([])
-    setFriends([])
-    setIncomingRequests([])
-    setOutgoingRequests([])
-    setConversations([])
-    setSelectedFriend('')
-    setDmMessages([])
-    setDmTypingUsers({})
-    setVoiceRecording(false)
-    setVoiceUploading(false)
-    setVoiceError('')
-  }
-
-  const handleAuthSubmit = async (event) => {
-    event.preventDefault()
-    setAuthError('')
-    setAuthSuccess('')
-
-    const client = getSupabaseClient()
-
-    if (!client) {
-      setAuthError('Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.')
-      return
-    }
-
-    if (!email.trim() || !password) {
-      setAuthError('Email and password are required.')
-      return
-    }
-
-    if (authMode === 'signup' && password !== confirmPassword) {
-      setAuthError('Passwords do not match.')
-      return
-    }
-
-    setAuthLoading(true)
-
-    try {
-      if (authMode === 'signin') {
-        const { data, error } = await client.auth.signInWithPassword({
-          email: email.trim(),
-          password,
-        })
-
-        if (error) {
-          throw error
-        }
-
-        if (data?.user) {
-          setUser(data.user)
-          setUserEmail(data.user.email || email.trim())
-          setAuthToken(data.session?.access_token || '')
-        }
+      if (isLogin) {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
       } else {
-        const { data, error } = await client.auth.signUp({
-          email: email.trim(),
+        const { error } = await supabase.auth.signUp({ 
+          email, 
           password,
-        })
-
-        if (error) {
-          throw error
-        }
-
-        if (!data?.session) {
-          setAuthSuccess('Account created. Check your email to verify, then sign in.')
-          setAuthMode('signin')
-          setConfirmPassword('')
-          setPassword('')
-          setAuthLoading(false)
-          return
-        }
-
-        if (data.user) {
-          setUser(data.user)
-          setUserEmail(data.user.email || email.trim())
-          setAuthToken(data.session?.access_token || '')
-        }
+          options: { data: { display_name: displayName || email.split('@')[0] } }
+        });
+        if (error) throw error;
       }
-
-      setPassword('')
-      setConfirmPassword('')
     } catch (err) {
-      setAuthError(err?.message || 'Authentication failed. Please try again.')
+      setError(err.message);
     } finally {
-      setAuthLoading(false)
+      setLoading(false);
     }
-  }
+  };
+
+  return (
+    <div className="flex h-screen w-screen">
+      {/* Hero Section */}
+      <div className="flex-1 bg-gradient-to-br from-slate-900 to-slate-950 flex flex-col justify-center px-16 border-r border-border-subtle relative overflow-hidden">
+        <div className="absolute top-[-200px] left-[-100px] w-[600px] h-[600px] bg-brand/5 rounded-full blur-3xl" />
+        <div className="absolute bottom-[-200px] right-[-100px] w-[500px] h-[500px] bg-sync-green/5 rounded-full blur-3xl" />
+        
+        <div className="relative z-10">
+          <div className="flex items-center gap-3 mb-12">
+            <div className="w-10 h-10 rounded-xl bg-brand flex items-center justify-center">
+              <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+              </svg>
+            </div>
+            <span className="text-2xl font-bold text-white tracking-tight">SyncSpace</span>
+          </div>
+          
+          <h1 className="text-6xl font-bold text-white mb-6 leading-tight">
+            Sync.<br/>Study.<br/>Connect.
+          </h1>
+          <p className="text-lg text-text-muted leading-relaxed max-w-md">
+            A private, real-time 2-person room designed for seamless media synchronization and focused productivity.
+          </p>
+        </div>
+      </div>
+
+      {/* Form Section */}
+      <div className="flex-1 flex items-center justify-center bg-bg-app p-8">
+        <div className="w-full max-w-md">
+          <div className="bg-bg-panel rounded-2xl p-8 shadow-2xl border border-border-subtle">
+            <h2 className="text-3xl font-bold text-white mb-2">
+              {isLogin ? 'Welcome back' : 'Create account'}
+            </h2>
+            <p className="text-text-muted mb-8 text-sm">
+              {isLogin ? 'Enter your credentials to access your workspace.' : 'Start your journey with a free account.'}
+            </p>
+
+            {error && (
+              <div className="bg-error-red/10 border border-error-red/30 text-error-red px-4 py-3 rounded-lg mb-6 text-sm">
+                {error}
+              </div>
+            )}
+
+            <form onSubmit={handleAuth} className="space-y-5">
+              <div>
+                <label className="block text-xs font-medium text-text-muted mb-2 uppercase tracking-wider">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  className="w-full bg-bg-card border border-border-subtle text-text-main rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all"
+                  placeholder="you@example.com"
+                />
+              </div>
+              
+              {!isLogin && (
+                <div>
+                  <label className="block text-xs font-medium text-text-muted mb-2 uppercase tracking-wider">
+                    Display Name
+                  </label>
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={e => setDisplayName(e.target.value)}
+                    className="w-full bg-bg-card border border-border-subtle text-text-main rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all"
+                    placeholder="How should we call you?"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-medium text-text-muted mb-2 uppercase tracking-wider">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  className="w-full bg-bg-card border border-border-subtle text-text-main rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 transition-all"
+                  placeholder="••••••••"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-brand hover:bg-brand-hover text-white font-semibold rounded-lg px-4 py-3 text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+              >
+                {loading ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Processing...
+                  </span>
+                ) : (isLogin ? 'Sign In' : 'Create Account')}
+              </button>
+            </form>
+
+            <div className="mt-6 text-center">
+              <button
+                onClick={() => { setIsLogin(!isLogin); setError(null); }}
+                className="text-text-muted hover:text-text-main text-sm transition-colors"
+              >
+                {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============== DASHBOARD VIEW ==============
+function DashboardView({ onJoinRoom, onLogout, user }) {
+  const [roomKey, setRoomKey] = useState('');
+  const [rooms, setRooms] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [inviteLink, setInviteLink] = useState('');
+  const [activeTab, setActiveTab] = useState('join');
 
   useEffect(() => {
-    return () => {
-      if (typingStopTimerRef.current) {
-        window.clearTimeout(typingStopTimerRef.current)
-      }
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop()
-      }
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((track) => track.stop())
-      }
+    fetchRooms();
+  }, []);
+
+  const fetchRooms = async () => {
+    try {
+      const session = await supabase.auth.getSession();
+      if (!session?.data?.session) return;
+      
+      const response = await fetch('http://localhost:5050/api/rooms', {
+        headers: {
+          'Authorization': `Bearer ${session.data.session.access_token}`
+        }
+      });
+      const data = await response.json();
+      if (response.ok) setRooms(data);
+    } catch (err) {
+      console.error('Failed to fetch rooms:', err);
     }
-  }, [])
+  };
 
-  if (!user) {
-    return (
-      <main className="app-shell app-shell-auth" aria-label="Authentication">
-        <div className="ambient-glow" aria-hidden="true" />
+  const handleCreateRoom = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setMessage('');
+    
+    const key = roomKey.trim() || `room-${Date.now().toString(36)}-${Math.random().toString(36).substr(2, 5)}`;
+    
+    try {
+      const session = await supabase.auth.getSession();
+      if (!session?.data?.session) {
+        setMessage('❌ Authentication error. Please sign in again.');
+        setLoading(false);
+        return;
+      }
+      
+      const response = await fetch('http://localhost:5050/api/rooms', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.data.session.access_token}`
+        },
+        body: JSON.stringify({ room_key: key })
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok) {
+        setMessage(`✅ Room "${key}" created successfully!`);
+        setInviteLink(`http://localhost:5173?room=${key}`);
+        fetchRooms();
+      } else if (response.status === 409) {
+        setMessage(`ℹ️ Room "${key}" already exists. You can join it.`);
+        setInviteLink(`http://localhost:5173?room=${key}`);
+      } else {
+        setMessage(`❌ ${data.error || 'Failed to create room'}`);
+      }
+    } catch (err) {
+      setMessage('❌ Network error. Is the server running?');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        <section className="auth-surface">
-          <div className="auth-layout">
-            <aside className="auth-visual" aria-hidden="true">
-              <div className="scene-glow" />
-              <div className="scene-sun-moon" />
-              <div className="scene-mountain mountain-back" />
-              <div className="scene-mountain mountain-mid" />
-              <div className="scene-mountain mountain-front" />
-              <div className="scene-ground" />
-              <div className="snow-layer">
-                {snowflakes.map((flake) => (
-                  <span
-                    key={flake}
-                    className="snowflake"
-                    style={{
-                      '--x': `${(flake * 37) % 100}%`,
-                      '--delay': `${(flake % 12) * -0.9}s`,
-                      '--duration': `${7 + (flake % 6)}s`,
-                      '--size': `${2 + (flake % 4)}px`,
-                    }}
-                  />
-                ))}
-              </div>
-            </aside>
+  const handleJoinRoom = async (e) => {
+    e.preventDefault();
+    if (!roomKey.trim()) return;
+    
+    setLoading(true);
+    setMessage('');
+    
+    try {
+      const session = await supabase.auth.getSession();
+      if (!session?.data?.session) {
+        setMessage('❌ Authentication error. Please sign in again.');
+        setLoading(false);
+        return;
+      }
 
-            <section className="auth-card" aria-label="Sign in and sign up">
-              <div className="auth-header">
+      const response = await fetch(`http://localhost:5050/api/rooms/${roomKey.trim()}/join`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.data.session.access_token}`
+        }
+      });
+      
+      if (response.ok) {
+        onJoinRoom(roomKey.trim());
+      } else {
+        const data = await response.json();
+        setMessage(`❌ ${data.error || 'Failed to join room'}`);
+      }
+    } catch (err) {
+      setMessage('❌ Network error. Is the server running?');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyInviteLink = () => {
+    navigator.clipboard.writeText(inviteLink);
+    setMessage('📋 Invite link copied to clipboard!');
+  };
+
+  return (
+    <div className="h-screen flex flex-col p-8 overflow-y-auto">
+      {/* Header */}
+      <header className="flex justify-between items-end mb-8 pb-6 border-b border-border-subtle">
+        <div>
+          <p className="text-text-muted text-xs uppercase tracking-wider mb-2">Dashboard</p>
+          <h1 className="text-3xl font-bold text-white">
+            Welcome, {user?.email?.split('@')[0]}
+          </h1>
+        </div>
+        <button
+          onClick={onLogout}
+          className="text-text-muted hover:text-error-red border border-border-subtle hover:border-error-red/50 px-5 py-2.5 rounded-lg text-sm transition-all"
+        >
+          Sign Out
+        </button>
+      </header>
+
+      {/* Message */}
+      {message && (
+        <div className={`mb-6 px-4 py-3 rounded-lg text-sm ${
+          message.startsWith('✅') ? 'bg-sync-green/10 text-sync-green border border-sync-green/30' :
+          message.startsWith('📋') ? 'bg-brand/10 text-brand border border-brand/30' :
+          message.startsWith('ℹ️') ? 'bg-warn-amber/10 text-warn-amber border border-warn-amber/30' :
+          'bg-error-red/10 text-error-red border border-error-red/30'
+        }`}>
+          {message}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Main Content */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Tabs */}
+          <div className="flex gap-4 mb-6">
+            <button
+              onClick={() => { setActiveTab('join'); setMessage(''); }}
+              className={`px-6 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                activeTab === 'join' 
+                  ? 'bg-brand text-white' 
+                  : 'bg-bg-card border border-border-subtle text-text-muted hover:text-text-main'
+              }`}
+            >
+              Join Room
+            </button>
+            <button
+              onClick={() => { setActiveTab('create'); setMessage(''); }}
+              className={`px-6 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                activeTab === 'create' 
+                  ? 'bg-brand text-white' 
+                  : 'bg-bg-card border border-border-subtle text-text-muted hover:text-text-main'
+              }`}
+            >
+              Create Room
+            </button>
+          </div>
+
+          {activeTab === 'join' ? (
+            <div className="bg-bg-panel border border-border-subtle rounded-xl p-6">
+              <h3 className="text-lg font-semibold text-white mb-2">Join a Room</h3>
+              <p className="text-text-muted text-sm mb-4">Enter a room key shared by your study partner.</p>
+              <form onSubmit={handleJoinRoom} className="space-y-4">
+                <input
+                  value={roomKey}
+                  onChange={e => setRoomKey(e.target.value)}
+                  placeholder="Enter room key..."
+                  className="w-full bg-bg-card border border-border-subtle text-text-main rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-brand transition-all"
+                  required
+                />
                 <button
-                  type="button"
-                  className="theme-toggle-btn"
-                  onClick={toggleTheme}
-                  aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-                  title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-brand hover:bg-brand-hover text-white font-semibold rounded-lg px-4 py-3 text-sm transition-all disabled:opacity-50"
                 >
-                  {theme === 'dark' ? 'Sun' : 'Moon'}
-                </button>
-              </div>
-
-              <div className="auth-mode-toggle" role="tablist" aria-label="Auth mode">
-                <button
-                  type="button"
-                  className={`mode-chip ${authMode === 'signin' ? 'active' : ''}`}
-                  onClick={() => {
-                    setAuthMode('signin')
-                    setAuthError('')
-                    setAuthSuccess('')
-                  }}
-                >
-                  Sign in
-                </button>
-                <button
-                  type="button"
-                  className={`mode-chip ${authMode === 'signup' ? 'active' : ''}`}
-                  onClick={() => {
-                    setAuthMode('signup')
-                    setAuthError('')
-                    setAuthSuccess('')
-                  }}
-                >
-                  Sign up
-                </button>
-              </div>
-
-              <form className="auth-form" onSubmit={handleAuthSubmit}>
-                <label className="auth-field">
-                  <span>Email</span>
-                  <input
-                    className="auth-input"
-                    type="email"
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                    placeholder="you@example.com"
-                    autoComplete="email"
-                    required
-                  />
-                </label>
-
-                <label className="auth-field">
-                  <span>Password</span>
-                  <input
-                    className="auth-input"
-                    type="password"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    placeholder="Password"
-                    autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'}
-                    required
-                  />
-                </label>
-
-                {authMode === 'signup' && (
-                  <label className="auth-field">
-                    <span>Confirm password</span>
-                    <input
-                      className="auth-input"
-                      type="password"
-                      value={confirmPassword}
-                      onChange={(event) => setConfirmPassword(event.target.value)}
-                      placeholder="Confirm password"
-                      autoComplete="new-password"
-                      required
-                    />
-                  </label>
-                )}
-
-                {authError && <p className="auth-feedback auth-error">{authError}</p>}
-                {authSuccess && <p className="auth-feedback auth-success">{authSuccess}</p>}
-
-                <button type="submit" className="primary-button auth-submit" disabled={authLoading}>
-                  {authLoading ? 'Please wait...' : authSubmitText}
+                  {loading ? 'Joining...' : 'Join Room'}
                 </button>
               </form>
-            </section>
+            </div>
+          ) : (
+            <div className="bg-bg-panel border border-border-subtle rounded-xl p-6">
+              <h3 className="text-lg font-semibold text-white mb-2">Create a New Room</h3>
+              <p className="text-text-muted text-sm mb-4">Create a room and share the invite link with your partner.</p>
+              <form onSubmit={handleCreateRoom} className="space-y-4">
+                <input
+                  value={roomKey}
+                  onChange={e => setRoomKey(e.target.value)}
+                  placeholder="Room key (e.g., study-session-1)"
+                  className="w-full bg-bg-card border border-border-subtle text-text-main rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-brand transition-all"
+                />
+                <p className="text-xs text-text-muted">Leave empty for auto-generated key</p>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-brand hover:bg-brand-hover text-white font-semibold rounded-lg px-4 py-3 text-sm transition-all disabled:opacity-50"
+                >
+                  {loading ? 'Creating...' : 'Create Room'}
+                </button>
+              </form>
+
+              {inviteLink && (
+                <div className="mt-6 p-4 bg-bg-card rounded-lg border border-brand/30">
+                  <p className="text-sm text-text-muted mb-2">Share this link with your partner:</p>
+                  <div className="flex gap-2">
+                    <input
+                      readOnly
+                      value={inviteLink}
+                      className="flex-1 bg-bg-app border border-border-subtle text-text-main rounded-lg px-3 py-2 text-xs"
+                    />
+                    <button
+                      onClick={copyInviteLink}
+                      className="bg-brand hover:bg-brand-hover text-white rounded-lg px-4 py-2 text-xs font-medium transition-all whitespace-nowrap"
+                    >
+                      Copy Link
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Recent Rooms */}
+          <div>
+            <h3 className="text-sm font-semibold text-text-muted uppercase tracking-wider mb-4">
+              Your Rooms ({rooms.length})
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {rooms.map(room => (
+                <div
+                  key={room.room_key}
+                  onClick={() => onJoinRoom(room.room_key)}
+                  className="bg-bg-panel border border-border-subtle rounded-xl p-5 hover:border-brand/50 transition-all cursor-pointer"
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-semibold text-white truncate">{room.room_key}</span>
+                    <span className="text-xs bg-sync-green/10 text-sync-green px-2 py-1 rounded-full">
+                      {room.is_active ? 'Active' : 'Inactive'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-4 text-xs text-text-muted">
+                    <span>Host: {room.host_username}</span>
+                    <span>Members: {room.member_count || 1}/2</span>
+                  </div>
+                </div>
+              ))}
+              {rooms.length === 0 && (
+                <p className="text-text-muted text-sm col-span-2 py-8 text-center">
+                  No rooms yet. Create or join one!
+                </p>
+              )}
+            </div>
           </div>
-        </section>
+        </div>
+
+        {/* Sidebar Tips */}
+        <div className="space-y-6">
+          <div className="bg-bg-panel border border-border-subtle rounded-xl p-6">
+            <h4 className="text-sm font-semibold text-white mb-4">How it works</h4>
+            <ul className="space-y-3 text-sm text-text-muted">
+              <li className="flex gap-3">
+                <span className="text-lg">🔑</span>
+                <span>Create a room to get started</span>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-lg">🔗</span>
+                <span>Share the invite link with your partner</span>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-lg">🎥</span>
+                <span>Watch videos together in sync</span>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-lg">💬</span>
+                <span>Chat and collaborate in real-time</span>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-lg">⏱️</span>
+                <span>Use the focus timer for study sessions</span>
+              </li>
+              <li className="flex gap-3">
+                <span className="text-lg">📝</span>
+                <span>Take shared notes together</span>
+              </li>
+            </ul>
+          </div>
+
+          <div className="bg-bg-panel border border-border-subtle rounded-xl p-6">
+            <h4 className="text-sm font-semibold text-white mb-4">Room Status</h4>
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="text-text-muted text-sm">Server</span>
+                <span className="text-sync-green text-sm flex items-center gap-1">
+                  <span className="w-2 h-2 bg-sync-green rounded-full" />
+                  Online
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-text-muted text-sm">Your Rooms</span>
+                <span className="text-white text-sm font-semibold">{rooms.length}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============== STUDY ROOM VIEW ==============
+function StudyRoomView({ roomKey, onLeave, user }) {
+  const socket = useSocket();
+  const [isStudyMode, setIsStudyMode] = useState(true);
+  const [members, setMembers] = useState([]);
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleConnect = () => {
+      socket.emit('join_room', { room_key: roomKey });
+    };
+
+    const handleRoomState = (data) => {
+      setMembers(data.members || []);
+    };
+
+    const handleUserJoined = (data) => {
+      setMembers(prev => [...prev, data]);
+    };
+
+    const handleUserLeft = (data) => {
+      setMembers(prev => prev.filter(m => m.username !== data.username));
+    };
+
+    if (socket.connected) {
+      handleConnect();
+    }
+
+    socket.on('connect', handleConnect);
+    socket.on('room_state', handleRoomState);
+    socket.on('user_joined', handleUserJoined);
+    socket.on('user_left', handleUserLeft);
+
+    return () => {
+      socket.emit('leave_room');
+      socket.off('connect', handleConnect);
+      socket.off('room_state', handleRoomState);
+      socket.off('user_joined', handleUserJoined);
+      socket.off('user_left', handleUserLeft);
+    };
+  }, [socket, roomKey]);
+
+  const getDisplayName = (username) => {
+    if (username === user?.email) return 'You';
+    return members.find(m => m.username === username)?.display_name || username;
+  };
+
+  return (
+    <div className="grid grid-cols-[280px_1fr_320px] grid-rows-[56px_1fr] h-screen w-screen">
+      {/* Top Bar */}
+      <header className="col-span-3 bg-bg-panel border-b border-border-subtle flex items-center justify-between px-6 z-10">
+        <div className="flex items-center gap-4">
+          <h2 className="text-base font-semibold text-white">{roomKey}</h2>
+          <div className="flex items-center gap-2 bg-sync-green/10 text-sync-green px-3 py-1 rounded-full text-xs font-semibold">
+            <div className="w-2 h-2 rounded-full bg-sync-green animate-pulse"/>
+            {members.length > 0 ? `${members.length} online` : 'Online'}
+          </div>
+          {members.length > 0 && (
+            <div className="flex -space-x-2">
+              {members.slice(0, 2).map(m => (
+                <div key={m.username} className="w-7 h-7 rounded-full bg-brand flex items-center justify-center border-2 border-bg-panel" title={m.display_name}>
+                  <span className="text-[10px] font-bold text-white uppercase">
+                    {m.display_name?.[0] || '?'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setIsStudyMode(!isStudyMode)}
+            className="bg-bg-card border border-border-subtle text-text-main hover:bg-bg-card/80 px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2"
+          >
+            <span>{isStudyMode ? '🎯' : '🎉'}</span>
+            {isStudyMode ? 'Study Mode' : 'Fun Mode'}
+          </button>
+          <button
+            onClick={onLeave}
+            className="text-text-muted hover:text-error-red border border-border-subtle hover:border-error-red/50 px-4 py-2 rounded-lg text-sm font-medium transition-all"
+          >
+            Leave Room
+          </button>
+        </div>
+      </header>
+
+      {/* Left Sidebar */}
+      <aside className="bg-bg-panel border-r border-border-subtle flex flex-col overflow-y-auto">
+        <div className="p-5 border-b border-border-subtle">
+          <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wider">Workspace</h3>
+        </div>
+        <TaskBoard roomKey={roomKey} />
+        <div className="p-5 mt-auto border-t border-border-subtle">
+          <button className="w-full bg-bg-card border border-border-subtle text-text-main hover:bg-bg-card/80 px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2">
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+            </svg>
+            Connect Google Drive
+          </button>
+        </div>
+      </aside>
+
+      {/* Center Stage */}
+      <main className="flex flex-col bg-bg-app overflow-hidden">
+        <div className="flex-[2] border-b border-border-subtle min-h-0">
+          <VideoPlayer roomKey={roomKey} currentUser={user} />
+        </div>
+        <div className="flex-1 min-h-0">
+          <ChatPanel roomKey={roomKey} currentUser={user} />
+        </div>
       </main>
-    )
+
+      {/* Right Sidebar */}
+      <aside className="bg-bg-panel border-l border-border-subtle flex flex-col overflow-y-auto">
+        <div className="p-5 border-b border-border-subtle">
+          <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wider">Study Tools</h3>
+        </div>
+        <div className="p-5 space-y-6">
+          <PomodoroTimer roomKey={roomKey} />
+          <SharedNotes roomKey={roomKey} />
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+// ============== ROOT APP ==============
+export default function App() {
+  const [session, setSession] = useState(null);
+  const [currentRoom, setCurrentRoom] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    // Check for room in URL
+    const params = new URLSearchParams(window.location.search);
+    const roomFromUrl = params.get('room');
+    if (roomFromUrl) {
+      setCurrentRoom(roomFromUrl);
+    }
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-bg-app">
+        <div className="flex flex-col items-center gap-4">
+          <svg className="animate-spin h-6 w-6 text-brand" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <span className="text-text-muted text-sm">Loading workspace...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!session) return <AuthView />;
+
+  if (!currentRoom) {
+    return (
+      <DashboardView
+        user={session.user}
+        onJoinRoom={setCurrentRoom}
+        onLogout={() => supabase.auth.signOut()}
+      />
+    );
   }
 
   return (
-    <main className="app-shell app-shell-dashboard" aria-label="Dashboard">
-      <div className="ambient-glow" aria-hidden="true" />
-
-      <section className="dashboard-page">
-        <header className="dashboard-nav" aria-label="Primary navigation">
-          <div className="dashboard-nav-brand">
-            <span className="dashboard-brand-dot" aria-hidden="true" />
-            <div>
-              <p className="eyebrow">Realtime Chat</p>
-              <h1>Control Center</h1>
-            </div>
-          </div>
-
-          <div className="dashboard-nav-center" role="status" aria-live="polite">
-            <span className="nav-chip">{theme === 'dark' ? 'Dark mode' : 'Light mode'}</span>
-            <span className={`status-pill ${isLoaded ? 'ready' : ''}`}>
-              <span className="status-dot" aria-hidden="true" />
-              {statusText}
-            </span>
-          </div>
-
-          <div className="dashboard-nav-actions">
-            <div className="account-chip" title={userEmail || ''}>
-              <span className="account-dot" aria-hidden="true" />
-              {userEmail}
-            </div>
-            <button
-              type="button"
-              className="theme-toggle-btn"
-              onClick={toggleTheme}
-              aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-            >
-              {theme === 'dark' ? 'Sun' : 'Moon'}
-            </button>
-            <button type="button" className="ghost-button" onClick={handleSignOut}>
-              Sign out
-            </button>
-          </div>
-        </header>
-
-        {!showChatStage ? (
-          <section className="dashboard-grid" aria-label="Dashboard landing">
-            <article className="dash-card hero-card">
-              <p className="eyebrow">Workspace</p>
-              <h2>Open your room and start coordinating instantly</h2>
-              <p className="hero-text">Run live chat, synchronized streams, and room moderation from one place.</p>
-              <div className="dash-actions">
-                <button type="button" className="primary-button" onClick={() => setShowChatStage(true)}>
-                  Enter chat
-                </button>
-                <button type="button" className="ghost-button" onClick={handleReload}>
-                  Reload room frame
-                </button>
-              </div>
-            </article>
-
-            <article className="dash-card social-card">
-              <div className="social-header">
-                <p className="eyebrow">Social Hub</p>
-                <div className="social-tabs" role="tablist" aria-label="Social tabs">
-                  <button
-                    type="button"
-                    className={`social-tab ${socialTab === 'notifications' ? 'active' : ''}`}
-                    onClick={() => setSocialTab('notifications')}
-                  >
-                    Notifications {unreadCount > 0 ? `(${unreadCount})` : ''}
-                  </button>
-                  <button
-                    type="button"
-                    className={`social-tab ${socialTab === 'friends' ? 'active' : ''}`}
-                    onClick={() => setSocialTab('friends')}
-                  >
-                    Friends
-                  </button>
-                  <button
-                    type="button"
-                    className={`social-tab ${socialTab === 'messages' ? 'active' : ''}`}
-                    onClick={() => setSocialTab('messages')}
-                  >
-                    Direct chat
-                  </button>
-                </div>
-              </div>
-
-              {socialError && <p className="social-error">{socialError}</p>}
-              {socialLoading && <p className="social-muted">Refreshing social data...</p>}
-
-              {socialTab === 'notifications' && (
-                <div className="social-panel">
-                  <div className="panel-tools">
-                    <button type="button" className="ghost-button" onClick={markNotificationsRead}>
-                      Mark all read
-                    </button>
-                  </div>
-                  <div className="feed-list">
-                    {notifications.length === 0 ? (
-                      <p className="social-muted">No notifications yet.</p>
-                    ) : (
-                      notifications.map((item) => (
-                        <div key={item.id} className={`feed-item ${item.is_read ? '' : 'unread'}`}>
-                          <strong>{item.kind.replace('_', ' ')}</strong>
-                          <span>{item.payload?.display_name || item.payload?.username || item.payload?.from || 'Activity'}</span>
-                          {item.payload?.preview && <span className="feed-preview">{item.payload.preview}</span>}
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {socialTab === 'friends' && (
-                <div className="social-panel">
-                  <div className="panel-tools search-tools">
-                    <input
-                      className="auth-input"
-                      value={searchQuery}
-                      onChange={(event) => setSearchQuery(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault()
-                          handleSearchUsers()
-                        }
-                      }}
-                      placeholder="Search users by username"
-                    />
-                    <button type="button" className="primary-button" onClick={handleSearchUsers}>
-                      Search
-                    </button>
-                  </div>
-
-                  {searchResults.length > 0 && (
-                    <div className="feed-list">
-                      {searchResults.map((profile) => (
-                        <div key={profile.username} className="feed-item">
-                          <div>
-                            <strong>{profile.display_name}</strong>
-                            <span>{profile.username}</span>
-                          </div>
-                          <button
-                            type="button"
-                            className="ghost-button"
-                            onClick={() => sendFriendRequest(profile.username)}
-                          >
-                            Add friend
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="split-lists">
-                    <div>
-                      <h3>Incoming requests</h3>
-                      {incomingRequests.length === 0 ? (
-                        <p className="social-muted">No incoming requests.</p>
-                      ) : (
-                        incomingRequests.map((req) => (
-                          <div key={req.id} className="feed-item">
-                            <div>
-                              <strong>{req.sender_profile?.display_name || req.sender_username}</strong>
-                              <span>{req.sender_username}</span>
-                            </div>
-                            <div className="inline-actions">
-                              <button type="button" className="primary-button" onClick={() => respondToRequest(req.id, 'accept')}>
-                                Accept
-                              </button>
-                              <button type="button" className="ghost-button" onClick={() => respondToRequest(req.id, 'reject')}>
-                                Reject
-                              </button>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                    <div>
-                      <h3>Your friends</h3>
-                      {friends.length === 0 ? (
-                        <p className="social-muted">No friends yet.</p>
-                      ) : (
-                        friends.map((friend) => (
-                          <div key={friend.username} className="feed-item">
-                            <div>
-                              <strong>{friend.display_name}</strong>
-                              <span>{friend.username}</span>
-                            </div>
-                            <button
-                              type="button"
-                              className="ghost-button"
-                              onClick={() => {
-                                setSocialTab('messages')
-                                loadConversation(friend.username)
-                              }}
-                            >
-                              Message
-                            </button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {socialTab === 'messages' && (
-                <div className="social-panel dm-dashboard">
-                  <div className="dm-hero-strip">
-                    <div>
-                      <h3>Direct messages</h3>
-                      <p>Live presence, typing, read receipts, and voice notes.</p>
-                    </div>
-                    <button type="button" className="ghost-button" onClick={() => setShowChatStage(true)}>
-                      Open watch party room
-                    </button>
-                  </div>
-
-                  <div className="dm-layout">
-                    <aside className="dm-sidebar">
-                      {conversations.length === 0 ? (
-                        <p className="social-muted">Start by adding friends.</p>
-                      ) : (
-                        conversations.map((convo) => {
-                          const status = convo?.friend?.presence?.status || 'offline'
-                          const isActive = selectedFriend === convo.friend.username
-                          return (
-                            <button
-                              key={convo.friend.username}
-                              type="button"
-                              className={`dm-thread ${isActive ? 'active' : ''}`}
-                              onClick={() => loadConversation(convo.friend.username)}
-                            >
-                              <div className="dm-thread-top">
-                                <strong>{convo.friend.display_name}</strong>
-                                <span className={`dm-status-dot ${status}`} aria-hidden="true" />
-                              </div>
-                              <span>{convo.last_message?.type === 'voice' ? 'Voice note' : convo.last_message?.message || 'No messages yet'}</span>
-                              <div className="dm-thread-meta">
-                                <em className={`dm-status-chip ${status}`}>{status}</em>
-                                {convo.unread > 0 && <em className="dm-unread-chip">{convo.unread} new</em>}
-                              </div>
-                            </button>
-                          )
-                        })
-                      )}
-                    </aside>
-
-                    <div className="dm-main">
-                      <header className="dm-main-header">
-                        {selectedFriend ? (
-                          <>
-                            <div>
-                              <h4>{selectedConversation?.friend?.display_name || selectedFriend}</h4>
-                              <p>{formatLastActive(selectedFriendPresence.last_active)}</p>
-                            </div>
-                            <span className={`dm-presence-pill ${selectedFriendPresence.status || 'offline'}`}>
-                              {selectedFriendPresence.status || 'offline'}
-                            </span>
-                          </>
-                        ) : (
-                          <h4>Select a conversation</h4>
-                        )}
-                      </header>
-
-                      <div className="dm-messages">
-                        {selectedFriend ? (
-                          dmMessages.length === 0 ? (
-                            <p className="social-muted">No messages yet with this friend.</p>
-                          ) : (
-                            dmMessages.map((message) => {
-                              const mine = String(message.sender_username || '').toLowerCase() === currentUsername
-                              return (
-                                <div key={message.id} className={`dm-bubble ${mine ? 'mine' : ''}`}>
-                                  {message.type === 'voice' && message.file_url ? (
-                                    <audio controls preload="metadata" src={message.file_url} className="dm-voice-player" />
-                                  ) : (
-                                    <p>{message.message}</p>
-                                  )}
-                                  <div className="dm-bubble-meta">
-                                    <span>{new Date(message.created_at).toLocaleString()}</span>
-                                    {mine && (
-                                      <span className="dm-read-state">{message.read_at ? 'Seen' : 'Sent'}</span>
-                                    )}
-                                  </div>
-                                </div>
-                              )
-                            })
-                          )
-                        ) : (
-                          <p className="social-muted">Select a friend conversation.</p>
-                        )}
-                        {selectedFriend && dmTypingUsers[selectedFriend] && (
-                          <p className="dm-typing-indicator">{selectedConversation?.friend?.display_name || selectedFriend} is typing...</p>
-                        )}
-                      </div>
-
-                      <div className="dm-composer">
-                        <input
-                          className="auth-input"
-                          value={dmInput}
-                          onChange={(event) => {
-                            setDmInput(event.target.value)
-                            queueTypingSignal()
-                          }}
-                          placeholder={selectedFriend ? 'Type a direct message...' : 'Select a conversation first'}
-                          disabled={!selectedFriend}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
-                              event.preventDefault()
-                              sendDirectMessage({ message: dmInput, type: 'text' })
-                            }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          disabled={!selectedFriend || voiceUploading}
-                          onClick={voiceRecording ? stopVoiceRecording : startVoiceRecording}
-                        >
-                          {voiceUploading ? 'Uploading...' : voiceRecording ? 'Stop voice' : 'Voice note'}
-                        </button>
-                        <button
-                          type="button"
-                          className="primary-button"
-                          disabled={!selectedFriend || !dmInput.trim()}
-                          onClick={() => sendDirectMessage({ message: dmInput, type: 'text' })}
-                        >
-                          Send
-                        </button>
-                      </div>
-                      {voiceError && <p className="social-error">{voiceError}</p>}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </article>
-          </section>
-        ) : (
-          <section className="chat-stage elevated-stage" aria-label="Chat stage">
-            <div className="chat-stage-toolbar">
-              <button type="button" className="ghost-button" onClick={() => setShowChatStage(false)}>
-                Back to dashboard
-              </button>
-              <span className={`status-pill ${isLoaded ? 'ready' : ''}`} aria-live="polite">
-                <span className="status-dot" aria-hidden="true" />
-                {statusText}
-              </span>
-              <button type="button" className="ghost-button" onClick={handleReload}>
-                Reload chat
-              </button>
-            </div>
-
-            <div className="frame-wrap chat-frame">
-              <iframe
-                key={frameKey}
-                className="legacy-frame"
-                src="/legacy.html"
-                title="Realtime Chat"
-                loading="eager"
-                referrerPolicy="strict-origin-when-cross-origin"
-                onLoad={() => setIsLoaded(true)}
-              />
-            </div>
-          </section>
-        )}
-      </section>
-    </main>
-  )
+    <SocketProvider token={session.access_token}>
+      <StudyRoomView
+        roomKey={currentRoom}
+        onLeave={() => {
+          setCurrentRoom(null);
+          window.history.replaceState({}, '', '/');
+        }}
+        user={session.user}
+      />
+    </SocketProvider>
+  );
 }
-
-export default App

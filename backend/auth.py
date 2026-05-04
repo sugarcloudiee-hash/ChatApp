@@ -1,38 +1,43 @@
-from flask import g, jsonify, request
-from sqlalchemy import func, or_
-from sqlalchemy.exc import IntegrityError, OperationalError
-from threading import Lock
+"""
+Authentication module using Supabase JWT tokens.
+"""
 import time
+import logging
+from threading import Lock
+
+from flask import g, jsonify, request
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from backend.extensions import db, supabase
-from backend.models import User, Session
-from backend.utils import _extract_access_token
+from backend.models import User
 
+logger = logging.getLogger(__name__)
 
+# Token verification cache
 _TOKEN_CACHE_LOCK = Lock()
 _TOKEN_CACHE: dict[str, tuple[float, dict]] = {}
 _TOKEN_CACHE_TTL_SECONDS = 60
 
 
-def _extract_supabase_user_record(user_response) -> dict:
-    if isinstance(user_response, dict):
-        user = user_response.get("user") or user_response.get("data") or user_response
-    else:
-        user = getattr(user_response, "user", None) or getattr(user_response, "data", None) or user_response
-
-    if hasattr(user, "model_dump"):
-        user = user.model_dump()
-    elif not isinstance(user, dict) and hasattr(user, "__dict__"):
-        user = dict(user.__dict__)
-
-    return user if isinstance(user, dict) else {}
-
-
 def _profile_from_supabase_user(user_data: dict, fallback_identifier: str = "") -> dict:
+    """Extract user profile from Supabase user data."""
     email = str(user_data.get("email") or fallback_identifier or "").strip().lower()
     metadata = user_data.get("user_metadata") or {}
-    display_name = str(metadata.get("full_name") or metadata.get("name") or metadata.get("display_name") or email.split("@")[0] or fallback_identifier or email).strip()
-    avatar = "".join([part[0] for part in display_name.split()[:2]]).upper() or email[:2].upper() or "?"
+    
+    display_name = str(
+        metadata.get("full_name") 
+        or metadata.get("display_name")
+        or metadata.get("name") 
+        or email.split("@")[0] 
+        or "User"
+    ).strip()
+    
+    # Generate avatar from initials
+    avatar = "".join([part[0] for part in display_name.split()[:2]]).upper()[:2]
+    if not avatar:
+        avatar = email[:2].upper() or "?"
+    
     return {
         "username": email,
         "email": email,
@@ -42,21 +47,25 @@ def _profile_from_supabase_user(user_data: dict, fallback_identifier: str = "") 
 
 
 def _upsert_local_user(profile: dict) -> User:
+    """Create or update local user record."""
     email = str(profile.get("email") or "").strip().lower()
     if not email:
         raise ValueError("Missing email for user sync")
 
     user = User.query.filter(func.lower(User.email) == email).first()
+    
     if user:
-        user.username = profile.get("username") or email
+        # Update existing user
         user.display_name = profile.get("display_name") or user.display_name
         user.avatar = profile.get("avatar") or user.avatar
+        user.last_seen = __import__('datetime').datetime.utcnow()
     else:
+        # Create new user
         user = User(
             username=profile.get("username") or email,
             email=email,
-            display_name=profile.get("display_name") or email.split("@")[0],
-            avatar=profile.get("avatar") or email[:2].upper(),
+            display_name=profile["display_name"],
+            avatar=profile["avatar"],
         )
         db.session.add(user)
 
@@ -65,184 +74,89 @@ def _upsert_local_user(profile: dict) -> User:
     except IntegrityError:
         db.session.rollback()
         user = User.query.filter(func.lower(User.email) == email).first()
-        if user:
-            user.username = profile.get("username") or email
-            user.display_name = profile.get("display_name") or user.display_name
-            user.avatar = profile.get("avatar") or user.avatar
-            db.session.commit()
-            return user
-        raise
+        if not user:
+            raise
+        user.display_name = profile.get("display_name") or user.display_name
+        user.avatar = profile.get("avatar") or user.avatar
+        db.session.commit()
 
     return user
 
 
-def _upsert_supabase_user(profile: dict) -> None:
-    try:
-        supabase.table("users").upsert(profile, on_conflict="email").execute()
-    except Exception:
-        pass
-
-
-def _find_supabase_user_by_identifier(identifier: str) -> dict:
-    target = str(identifier or "").strip().lower()
-    if not target:
-        return {}
-
-    try:
-        if hasattr(supabase, "table"):
-            for field in ("email", "username", "display_name"):
-                try:
-                    response = supabase.table("users").select("*").eq(field, target).limit(1).execute()
-                    data = getattr(response, "data", None) or (response.get("data") if isinstance(response, dict) else None)
-                    if data:
-                        record = data[0]
-                        if isinstance(record, dict):
-                            return record
-                except Exception:
-                    continue
-    except Exception:
-        pass
-
-    admin = getattr(getattr(supabase, "auth", None), "admin", None)
-    if not admin:
-        return {}
-
-    page = 1
-    while page <= 10:
-        try:
-            response = admin.list_users(page=page, per_page=100)
-        except TypeError:
-            response = admin.list_users()
-        except Exception:
-            break
-
-        payload = response if isinstance(response, dict) else getattr(response, "__dict__", {})
-        users = payload.get("users") or payload.get("data") or []
-        if not users:
-            break
-
-        for raw_user in users:
-            user_data = _extract_supabase_user_record(raw_user)
-            email = str(user_data.get("email") or "").strip().lower()
-            metadata = user_data.get("user_metadata") or {}
-            display_name = str(metadata.get("full_name") or metadata.get("name") or metadata.get("display_name") or "").strip().lower()
-            metadata_username = str(metadata.get("username") or "").strip().lower()
-            if target in {email, display_name, metadata_username}:
-                return user_data
-
-        page += 1
-
-    return {}
-
-
-def find_or_sync_user_by_identifier(identifier: str):
-    target = str(identifier or "").strip()
-    if not target:
-        return None
-
-    lowered = target.lower()
-    local_user = User.query.filter(
-        or_(
-            func.lower(User.username) == lowered,
-            func.lower(User.email) == lowered,
-            func.lower(User.display_name) == lowered,
-        )
-    ).first()
-    if local_user:
-        return local_user
-
-    user_data = _find_supabase_user_by_identifier(target)
-    if not user_data:
-        return None
-
-    profile = _profile_from_supabase_user(user_data, fallback_identifier=target)
-    _upsert_supabase_user(profile)
-    return _upsert_local_user(profile)
-
-
 def _verify_supabase_token(token: str) -> dict:
+    """Verify Supabase JWT token with caching."""
     if not token:
         raise ValueError("Missing Supabase auth token")
 
     now = time.time()
-    cached = _TOKEN_CACHE.get(token)
-    if cached and cached[0] > now:
-        return cached[1]
+    
+    # Check cache first
+    with _TOKEN_CACHE_LOCK:
+        cached = _TOKEN_CACHE.get(token)
+        if cached and cached[0] > now:
+            return cached[1]
 
     try:
-        # Supabase client can fail intermittently under concurrent auth checks.
-        # Serialize verification and cache for a short window to avoid transient HTTP/2 errors.
-        with _TOKEN_CACHE_LOCK:
-            now = time.time()
-            cached = _TOKEN_CACHE.get(token)
-            if cached and cached[0] > now:
-                return cached[1]
-
-            if hasattr(supabase.auth, "get_user"):
-                user_response = supabase.auth.get_user(token)
-            else:
-                user_response = supabase.auth.api.get_user(token)
+        user_response = supabase.auth.get_user(token)
     except Exception as exc:
-        raise ValueError(f"Invalid Supabase auth token: {exc}") from exc
+        logger.error(f"Token verification failed: {exc}")
+        raise ValueError(f"Invalid Supabase auth token") from exc
 
-    if isinstance(user_response, dict):
-        user = user_response.get("user") or user_response.get("data")
-        error = user_response.get("error")
+    if hasattr(user_response, 'user'):
+        user = user_response.user.model_dump()
+    elif isinstance(user_response, dict):
+        user = user_response.get('user', {})
     else:
-        user = getattr(user_response, "user", None) or getattr(user_response, "data", None) or user_response
-        error = getattr(user_response, "error", None)
+        raise ValueError("Unexpected response format from Supabase")
 
-    if hasattr(user, "model_dump"):
-        user = user.model_dump()
-    elif not isinstance(user, dict) and hasattr(user, "__dict__"):
-        user = dict(user.__dict__)
-
-    if error:
-        raise ValueError(f"Invalid Supabase auth token: {error}")
     if not user or not user.get("email"):
         raise ValueError("Invalid Supabase user")
 
-    _TOKEN_CACHE[token] = (time.time() + _TOKEN_CACHE_TTL_SECONDS, user)
+    # Cache the result
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE[token] = (time.time() + _TOKEN_CACHE_TTL_SECONDS, user)
+
     return user
 
 
-def _get_user_from_supabase(token: str):
-    user_data = _verify_supabase_token(token)
-    profile = _profile_from_supabase_user(user_data)
-    if not profile.get("email"):
-        raise ValueError("Supabase auth user missing email")
-
-    _upsert_supabase_user(profile)
-    return _upsert_local_user(profile)
-
-
 def _current_user(token: str | None = None):
+    """Get or verify current user from JWT token."""
     if getattr(g, "current_user", None):
         return g.current_user
 
     if token is None:
-        token = _extract_access_token()
+        # Extract token from request
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        else:
+            token = request.args.get("access_token", "").strip()
+            if not token:
+                token = request.args.get("token", "").strip()
 
-    user = _get_user_from_supabase(token)
+    if not token:
+        raise ValueError("No authentication token provided")
+
+    user_data = _verify_supabase_token(token)
+    profile = _profile_from_supabase_user(user_data)
+    user = _upsert_local_user(profile)
+    
     g.current_user = user
     return user
 
 
 def register_auth(app):
+    """Register authentication middleware."""
+    
     @app.before_request
     def require_auth():
+        """Authenticate all API requests except public endpoints."""
         public_paths = {
             "/",
             "/favicon.ico",
-            "/favicon.svg",
-            "/legacy.html",
-            "/index.html",
-            "/style.css",
-            "/script.js",
+            "/api/health",
         }
         public_prefixes = (
-            "/assets/",
-            "/download/",
             "/socket.io",
             "/.well-known/",
         )
@@ -256,11 +170,12 @@ def register_auth(app):
         if request.path.startswith(public_prefixes):
             return None
 
+        # Skip auth for API config endpoint
+        if request.path == "/api/config":
+            return None
+
         try:
             _current_user()
-        except OperationalError as exc:
-            app.logger.error(f"Database unavailable during auth: {str(exc)}")
-            return jsonify({"error": "Database temporarily unavailable"}), 503
         except Exception as exc:
-            app.logger.warning(f"Unauthorized request: {str(exc)}")
+            logger.warning(f"Unauthorized request to {request.path}: {str(exc)}")
             return jsonify({"error": "Unauthorized"}), 401

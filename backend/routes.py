@@ -1,722 +1,247 @@
-import json
-import re
-import uuid
-import time
+"""
+REST API routes for rooms, users, and media management.
+"""
+import logging
 from datetime import datetime
-from pathlib import Path
 
-import requests
 from flask import jsonify, request, send_from_directory
-from sqlalchemy import and_, or_
-from werkzeug.utils import secure_filename
-from backend.auth import _current_user, find_or_sync_user_by_identifier
-from backend.config import FRONTEND_DIR, UPLOAD_DIR
-from backend.extensions import db, supabase
-from backend.models import DirectMessage, FriendRequest, Friendship, Notification, User
-from backend.sockets import emit_social_refresh, get_social_presence_snapshot
-from backend.utils import _allowed_file, _make_file_token, _verify_file_token, _extract_room_key
+from sqlalchemy import func, select
 
+from backend.auth import _current_user
+from backend.extensions import db
+from backend.models import Room, RoomMember, Message, User
+from backend.config import UPLOAD_DIR
 
-def _asset_mimetype(path: str) -> str | None:
-    suffix = Path(path).suffix.lower()
-    if suffix in {".js", ".mjs", ".jsx"}:
-        return "text/javascript"
-    if suffix == ".css":
-        return "text/css"
-    if suffix == ".svg":
-        return "image/svg+xml"
-    return None
-
-
-def _friendship_pair(username_a: str, username_b: str) -> tuple[str, str]:
-    clean_a = str(username_a or "").strip().lower()
-    clean_b = str(username_b or "").strip().lower()
-    return (clean_a, clean_b) if clean_a <= clean_b else (clean_b, clean_a)
-
-
-def _is_friends(username_a: str, username_b: str) -> bool:
-    user_a, user_b = _friendship_pair(username_a, username_b)
-    return Friendship.query.filter_by(user_a=user_a, user_b=user_b).first() is not None
-
-
-def _create_notification(username: str, kind: str, payload: dict):
-    note = Notification(
-        username=str(username or "").strip().lower(),
-        kind=kind,
-        payload=payload or {},
-        is_read=False,
-    )
-    db.session.add(note)
-    return note
-
-
-def _touch_social_activity(username: str):
-    clean_username = str(username or "").strip().lower()
-    if clean_username:
-        SOCIAL_LAST_ACTIVE[clean_username] = time.time()
+logger = logging.getLogger(__name__)
 
 
 def register_routes(app):
-    @app.get("/")
-    def index():
-        return send_from_directory(app.static_folder, "index.html")
-
-    @app.get("/me")
-    def me():
-        user = _current_user()
-        return jsonify({"user": user.to_dict()})
-
-    @app.get("/favicon.ico")
-    def favicon():
-        return "", 204
-
-    @app.get("/favicon.svg")
-    def favicon_svg():
-        favicon_path = Path(app.static_folder) / "favicon.svg"
-        if favicon_path.exists() and favicon_path.is_file():
-            return send_from_directory(app.static_folder, "favicon.svg", mimetype="image/svg+xml")
-        return "", 204
-
-    @app.post("/session")
-    def create_session():
-        user = _current_user()
-        return jsonify({"user": user.to_dict()}), 200
-
-    @app.patch("/theme")
-    def update_theme():
-        user = _current_user()
-        payload = request.get_json(silent=True) or {}
-        next_theme = str(payload.get("theme") or "").strip().lower()
-        if next_theme not in {"dark", "light"}:
-            return jsonify({"error": "Theme must be either dark or light."}), 400
-
+    
+    @app.route("/api/me", methods=["GET"])
+    def get_current_user():
+        """Get current authenticated user profile."""
         try:
-            supabase.table("user").update({"theme": next_theme}).eq("email", user.email).execute()
-        except Exception as exc:
-            return jsonify({"error": f"Failed to save theme preference: {exc}"}), 502
+            user = _current_user()
+            return jsonify(user.to_dict()), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 401
 
-        return jsonify({"theme": next_theme}), 200
+    @app.route("/api/users/<identifier>", methods=["GET"])
+    def get_user(identifier):
+        """Get user by username or email."""
+        try:
+            _current_user()  # Ensure authenticated
+            user = User.query.filter(
+                (func.lower(User.username) == identifier.lower()) |
+                (func.lower(User.email) == identifier.lower())
+            ).first()
+            
+            if not user:
+                return jsonify({"error": "User not found"}), 404
+                
+            return jsonify(user.to_dict()), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 401
 
-    @app.get("/social/users/search")
-    def social_search_users():
-        user = _current_user()
-        query = str(request.args.get("q") or "").strip().lower()
-        if len(query) < 2:
-            return jsonify({"users": []}), 200
-
-        users = (
-            User.query.filter(
-                and_(
-                    User.username != user.username,
-                    or_(
-                        User.username.ilike(f"%{query}%"),
-                        User.display_name.ilike(f"%{query}%"),
-                        User.email.ilike(f"%{query}%"),
-                    ),
-                )
+    @app.route("/api/rooms", methods=["GET"])
+    def list_rooms():
+        """List rooms where current user is a member."""
+        try:
+            user = _current_user()
+            
+            # Get rooms where user is member
+            member_rooms = select(RoomMember.room_key).where(
+                RoomMember.username == user.username
             )
-            .order_by(User.display_name.asc())
-            .limit(20)
-            .all()
-        )
+            
+            rooms = Room.query.filter(
+                Room.host_username == user.username
+            ).union(
+                Room.query.filter(Room.room_key.in_(member_rooms))
+            ).all()
+            
+            return jsonify([r.to_dict() for r in rooms]), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 401
 
-        return jsonify(
-            {
-                "users": [
-                    {
-                        "username": u.username,
-                        "display_name": u.display_name,
-                        "avatar": u.avatar,
-                        "email": u.email,
-                    }
-                    for u in users
-                ]
-            }
-        ), 200
+    @app.route("/api/rooms", methods=["POST"])
+    def create_room():
+        """Create a new room."""
+        try:
+            user = _current_user()
+            data = request.json or {}
+            room_key = data.get("room_key", "").strip()
+            
+            if not room_key:
+                return jsonify({"error": "Room key is required"}), 400
+            
+            # Check if room exists
+            existing = Room.query.filter_by(room_key=room_key).first()
+            if existing:
+                return jsonify({"error": "Room already exists", "room": existing.to_dict()}), 409
+            
+            # Create new room
+            room = Room(
+                room_key=room_key,
+                host_username=user.username,
+                room_type=data.get("room_type", "study")
+            )
+            db.session.add(room)
+            
+            # Add creator as member
+            member = RoomMember(
+                room_key=room_key,
+                username=user.username,
+                display_name=user.display_name,
+                role="host",
+                is_online=True
+            )
+            db.session.add(member)
+            db.session.commit()
+            
+            logger.info(f"Room created: {room_key} by {user.username}")
+            return jsonify({
+                "message": "Room created",
+                "room": room.to_dict()
+            }), 201
+            
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error creating room: {e}")
+            return jsonify({"error": str(e)}), 500
 
-    @app.get("/social/friends")
-    def social_friends():
-        user = _current_user()
-        friendships = Friendship.query.filter(
-            or_(Friendship.user_a == user.username, Friendship.user_b == user.username)
-        ).all()
+    @app.route("/api/rooms/<room_key>", methods=["GET"])
+    def get_room(room_key):
+        """Get room details."""
+        try:
+            user = _current_user()
+            room = Room.query.filter_by(room_key=room_key).first()
+            
+            if not room:
+                return jsonify({"error": "Room not found"}), 404
+            
+            # Check if user is member
+            member = RoomMember.query.filter_by(
+                room_key=room_key, 
+                username=user.username
+            ).first()
+            
+            if not member and room.host_username != user.username:
+                return jsonify({"error": "Not a member of this room"}), 403
+            
+            # Get members
+            members = RoomMember.query.filter_by(room_key=room_key).all()
+            
+            return jsonify({
+                **room.to_dict(),
+                "members": [{
+                    "username": m.username,
+                    "display_name": m.display_name,
+                    "role": m.role,
+                    "is_online": m.is_online,
+                    "joined_at": m.joined_at.isoformat() if m.joined_at else None
+                } for m in members]
+            }), 200
+            
+        except Exception as e:
+            return jsonify({"error": str(e)}), 401
 
-        friend_usernames = []
-        for row in friendships:
-            friend_usernames.append(row.user_b if row.user_a == user.username else row.user_a)
-
-        profiles = []
-        if friend_usernames:
-            profiles = (
-                User.query.filter(User.username.in_(friend_usernames))
-                .order_by(User.display_name.asc())
+    @app.route("/api/rooms/<room_key>/messages", methods=["GET"])
+    def get_messages(room_key):
+        """Get recent messages for a room."""
+        try:
+            user = _current_user()
+            
+            # Check membership
+            member = RoomMember.query.filter_by(
+                room_key=room_key,
+                username=user.username
+            ).first()
+            
+            room = Room.query.filter_by(room_key=room_key, host_username=user.username).first()
+            
+            if not member and not room:
+                return jsonify({"error": "Not a member of this room"}), 403
+            
+            # Get recent messages (last 50)
+            limit = min(int(request.args.get("limit", 50)), 100)
+            messages = (
+                Message.query
+                .filter_by(room_key=room_key)
+                .order_by(Message.timestamp.desc())
+                .limit(limit)
                 .all()
             )
+            
+            return jsonify([m.to_dict() for m in reversed(messages)]), 200
+            
+        except Exception as e:
+            return jsonify({"error": str(e)}), 401
 
-        return jsonify(
-            {
-                "friends": [
-                    {
-                        "username": p.username,
-                        "display_name": p.display_name,
-                        "avatar": p.avatar,
-                        "email": p.email,
-                    }
-                    for p in profiles
-                ]
-            }
-        ), 200
-
-    @app.get("/social/friend-requests")
-    def social_friend_requests():
-        user = _current_user()
-        incoming = FriendRequest.query.filter_by(receiver_username=user.username, status="pending").all()
-        outgoing = FriendRequest.query.filter_by(sender_username=user.username, status="pending").all()
-
-        usernames = set()
-        for row in incoming:
-            usernames.add(row.sender_username)
-        for row in outgoing:
-            usernames.add(row.receiver_username)
-
-        profile_map = {}
-        if usernames:
-            for profile in User.query.filter(User.username.in_(list(usernames))).all():
-                profile_map[profile.username] = {
-                    "username": profile.username,
-                    "display_name": profile.display_name,
-                    "avatar": profile.avatar,
-                    "email": profile.email,
-                }
-
-        return jsonify(
-            {
-                "incoming": [
-                    {
-                        **row.to_dict(),
-                        "sender_profile": profile_map.get(row.sender_username),
-                    }
-                    for row in incoming
-                ],
-                "outgoing": [
-                    {
-                        **row.to_dict(),
-                        "receiver_profile": profile_map.get(row.receiver_username),
-                    }
-                    for row in outgoing
-                ],
-            }
-        ), 200
-
-    @app.post("/social/friend-requests")
-    def social_send_friend_request():
-        user = _current_user()
-        payload = request.get_json(silent=True) or {}
-        target = str(payload.get("username") or "").strip().lower()
-        if not target:
-            return jsonify({"error": "Target username is required."}), 400
-
-        if target == user.username:
-            return jsonify({"error": "You cannot add yourself."}), 400
-
-        target_user = User.query.filter_by(username=target).first() or find_or_sync_user_by_identifier(target)
-        if not target_user:
-            return jsonify({"error": "User not found."}), 404
-
-        target_username = target_user.username
-        if _is_friends(user.username, target_username):
-            return jsonify({"error": "Already friends."}), 409
-
-        reverse_pending = FriendRequest.query.filter_by(
-            sender_username=target_username,
-            receiver_username=user.username,
-            status="pending",
-        ).first()
-        if reverse_pending:
-            user_a, user_b = _friendship_pair(user.username, target_username)
-            friendship = Friendship(user_a=user_a, user_b=user_b)
-            reverse_pending.status = "accepted"
-            reverse_pending.responded_at = datetime.utcnow()
-            db.session.add(friendship)
-            _create_notification(
-                target_username,
-                "friend_request_accepted",
-                {
-                    "username": user.username,
-                    "display_name": user.display_name,
-                },
-            )
+    @app.route("/api/rooms/<room_key>", methods=["DELETE"])
+    def delete_room(room_key):
+        """Delete a room (host only)."""
+        try:
+            user = _current_user()
+            room = Room.query.filter_by(room_key=room_key).first()
+            
+            if not room:
+                return jsonify({"error": "Room not found"}), 404
+            
+            if room.host_username != user.username:
+                return jsonify({"error": "Only the host can delete this room"}), 403
+            
+            db.session.delete(room)
             db.session.commit()
-            emit_social_refresh(user.username, target_username)
-            return jsonify({"friendship": friendship.to_dict(), "auto_accepted": True}), 200
+            
+            logger.info(f"Room deleted: {room_key}")
+            return jsonify({"message": "Room deleted"}), 200
+            
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error deleting room: {e}")
+            return jsonify({"error": str(e)}), 500
 
-        existing = FriendRequest.query.filter_by(
-            sender_username=user.username,
-            receiver_username=target_username,
-        ).first()
-
-        if existing and existing.status == "pending":
-            return jsonify({"friend_request": existing.to_dict()}), 200
-
-        if existing:
-            existing.status = "pending"
-            existing.responded_at = None
-            friend_request = existing
-        else:
-            friend_request = FriendRequest(
-                sender_username=user.username,
-                receiver_username=target_username,
-                status="pending",
+    @app.route("/api/rooms/<room_key>/join", methods=["POST"])
+    def join_room(room_key):
+        """Join an existing room."""
+        try:
+            user = _current_user()
+            room = Room.query.filter_by(room_key=room_key).first()
+            
+            if not room:
+                return jsonify({"error": "Room not found"}), 404
+            
+            # Check if already member
+            existing = RoomMember.query.filter_by(
+                room_key=room_key,
+                username=user.username
+            ).first()
+            
+            if existing:
+                existing.is_online = True
+                db.session.commit()
+                return jsonify({"message": "Already a member", "room": room.to_dict()}), 200
+            
+            # Check room capacity
+            member_count = RoomMember.query.filter_by(room_key=room_key).count()
+            if member_count >= room.max_members:
+                return jsonify({"error": f"Room is full (max {room.max_members} members)"}), 403
+            
+            # Add as member
+            member = RoomMember(
+                room_key=room_key,
+                username=user.username,
+                display_name=user.display_name,
+                role="member",
+                is_online=True
             )
-            db.session.add(friend_request)
-
-        _create_notification(
-            target_username,
-            "friend_request",
-            {
-                "username": user.username,
-                "display_name": user.display_name,
-            },
-        )
-        db.session.commit()
-        emit_social_refresh(user.username, target_username)
-
-        return jsonify({"friend_request": friend_request.to_dict()}), 201
-
-    @app.post("/social/friend-requests/<int:request_id>/accept")
-    def social_accept_friend_request(request_id: int):
-        user = _current_user()
-        friend_request = FriendRequest.query.filter_by(
-            id=request_id,
-            receiver_username=user.username,
-            status="pending",
-        ).first()
-        if not friend_request:
-            return jsonify({"error": "Friend request not found."}), 404
-
-        user_a, user_b = _friendship_pair(friend_request.sender_username, user.username)
-        existing_friendship = Friendship.query.filter_by(user_a=user_a, user_b=user_b).first()
-        if not existing_friendship:
-            existing_friendship = Friendship(user_a=user_a, user_b=user_b)
-            db.session.add(existing_friendship)
-
-        friend_request.status = "accepted"
-        friend_request.responded_at = datetime.utcnow()
-
-        reverse = FriendRequest.query.filter_by(
-            sender_username=user.username,
-            receiver_username=friend_request.sender_username,
-            status="pending",
-        ).first()
-        if reverse:
-            reverse.status = "accepted"
-            reverse.responded_at = datetime.utcnow()
-
-        _create_notification(
-            friend_request.sender_username,
-            "friend_request_accepted",
-            {
-                "username": user.username,
-                "display_name": user.display_name,
-            },
-        )
-        db.session.commit()
-        emit_social_refresh(user.username, friend_request.sender_username)
-        return jsonify({"friendship": existing_friendship.to_dict(), "friend_request": friend_request.to_dict()}), 200
-
-    @app.post("/social/friend-requests/<int:request_id>/reject")
-    def social_reject_friend_request(request_id: int):
-        user = _current_user()
-        friend_request = FriendRequest.query.filter_by(
-            id=request_id,
-            receiver_username=user.username,
-            status="pending",
-        ).first()
-        if not friend_request:
-            return jsonify({"error": "Friend request not found."}), 404
-
-        friend_request.status = "rejected"
-        friend_request.responded_at = datetime.utcnow()
-        db.session.commit()
-        emit_social_refresh(user.username, friend_request.sender_username)
-        return jsonify({"friend_request": friend_request.to_dict()}), 200
-
-    @app.get("/social/chats")
-    def social_chat_list():
-        user = _current_user()
-        _touch_social_activity(user.username)
-        friendships = Friendship.query.filter(
-            or_(Friendship.user_a == user.username, Friendship.user_b == user.username)
-        ).all()
-
-        friend_usernames = [row.user_b if row.user_a == user.username else row.user_a for row in friendships]
-        friend_profiles = {}
-        if friend_usernames:
-            for profile in User.query.filter(User.username.in_(friend_usernames)).all():
-                friend_profiles[profile.username] = {
-                    "username": profile.username,
-                    "display_name": profile.display_name,
-                    "avatar": profile.avatar,
-                    "email": profile.email,
-                }
-
-        presence_map = get_social_presence_snapshot(friend_usernames)
-
-        conversation_map = {
-            username: {
-                "friend": {
-                    **friend_profiles.get(username, {"username": username, "display_name": username, "avatar": "?", "email": ""}),
-                    "presence": presence_map.get(username, {"status": "offline", "last_active": 0.0}),
-                },
-                "last_message": None,
-                "unread": 0,
-            }
-            for username in friend_usernames
-        }
-
-        if friend_usernames:
-            rows = (
-                DirectMessage.query.filter(
-                    or_(
-                        and_(DirectMessage.sender_username == user.username, DirectMessage.receiver_username.in_(friend_usernames)),
-                        and_(DirectMessage.receiver_username == user.username, DirectMessage.sender_username.in_(friend_usernames)),
-                    )
-                )
-                .order_by(DirectMessage.created_at.desc())
-                .all()
-            )
-
-            for row in rows:
-                friend_username = row.receiver_username if row.sender_username == user.username else row.sender_username
-                convo = conversation_map.get(friend_username)
-                if not convo:
-                    continue
-                if convo["last_message"] is None:
-                    convo["last_message"] = row.to_dict()
-                if row.receiver_username == user.username and row.read_at is None:
-                    convo["unread"] += 1
-
-        conversations = list(conversation_map.values())
-        conversations.sort(
-            key=lambda item: item["last_message"]["created_at"] if item["last_message"] else "",
-            reverse=True,
-        )
-
-        return jsonify({"conversations": conversations}), 200
-
-    @app.get("/social/chats/<friend_username>/messages")
-    def social_chat_messages(friend_username: str):
-        user = _current_user()
-        _touch_social_activity(user.username)
-        peer = str(friend_username or "").strip().lower()
-        if not peer:
-            return jsonify({"error": "Friend username is required."}), 400
-        if not _is_friends(user.username, peer):
-            return jsonify({"error": "You can only message accepted friends."}), 403
-
-        rows = (
-            DirectMessage.query.filter(
-                or_(
-                    and_(DirectMessage.sender_username == user.username, DirectMessage.receiver_username == peer),
-                    and_(DirectMessage.sender_username == peer, DirectMessage.receiver_username == user.username),
-                )
-            )
-            .order_by(DirectMessage.created_at.asc())
-            .limit(250)
-            .all()
-        )
-
-        updated = False
-        read_ids: list[int] = []
-        for row in rows:
-            if row.receiver_username == user.username and row.read_at is None:
-                row.read_at = datetime.utcnow()
-                updated = True
-                read_ids.append(row.id)
-
-        if updated:
+            db.session.add(member)
             db.session.commit()
-            socketio.emit(
-                "dm_read",
-                {
-                    "reader": user.username,
-                    "peer": peer,
-                    "ids": read_ids,
-                    "read_at": datetime.utcnow().isoformat() + "Z",
-                },
-                room=f"social:{peer}",
-                namespace="/social",
-            )
-
-        friend_profile = User.query.filter_by(username=peer).first()
-        return jsonify(
-            {
-                "friend": {
-                    "username": peer,
-                    "display_name": friend_profile.display_name if friend_profile else peer,
-                    "avatar": friend_profile.avatar if friend_profile else "?",
-                    "email": friend_profile.email if friend_profile else "",
-                },
-                "messages": [row.to_dict() for row in rows],
-            }
-        ), 200
-
-    @app.post("/social/chats/<friend_username>/messages")
-    def social_send_chat_message(friend_username: str):
-        user = _current_user()
-        _touch_social_activity(user.username)
-        peer = str(friend_username or "").strip().lower()
-        if not peer:
-            return jsonify({"error": "Friend username is required."}), 400
-        if not _is_friends(user.username, peer):
-            return jsonify({"error": "You can only message accepted friends."}), 403
-
-        payload = request.get_json(silent=True) or {}
-        msg_type = str(payload.get("type") or "text").strip().lower()
-        if msg_type not in {"text", "voice"}:
-            msg_type = "text"
-
-        text = str(payload.get("message") or "").strip()
-        file_url = str(payload.get("file_url") or "").strip() or None
-
-        if msg_type == "text" and not text:
-            return jsonify({"error": "Message cannot be empty."}), 400
-        if msg_type == "voice" and not file_url:
-            return jsonify({"error": "Voice message is missing audio URL."}), 400
-
-        message_row = DirectMessage(
-            sender_username=user.username,
-            receiver_username=peer,
-            message=text,
-            type=msg_type,
-            file_url=file_url,
-            created_at=datetime.utcnow(),
-            read_at=None,
-        )
-        db.session.add(message_row)
-
-        _create_notification(
-            peer,
-            "direct_message",
-            {
-                "from": user.username,
-                "display_name": user.display_name,
-                "preview": text[:120] if text else ("Sent a voice note" if msg_type == "voice" else "New message"),
-            },
-        )
-        db.session.commit()
-        payload = message_row.to_dict()
-
-        socketio.emit(
-            "dm_message",
-            {
-                "from": user.username,
-                "to": peer,
-                "message": payload,
-            },
-            room=f"social:{peer}",
-            namespace="/social",
-        )
-        socketio.emit(
-            "dm_message",
-            {
-                "from": user.username,
-                "to": peer,
-                "message": payload,
-            },
-            room=f"social:{user.username}",
-            namespace="/social",
-        )
-        emit_social_refresh(user.username, peer)
-
-        return jsonify({"message": payload}), 201
-
-    @app.get("/social/notifications")
-    def social_notifications():
-        user = _current_user()
-        limit = min(100, max(1, int(request.args.get("limit") or 40)))
-        rows = (
-            Notification.query.filter_by(username=user.username)
-            .order_by(Notification.created_at.desc())
-            .limit(limit)
-            .all()
-        )
-        return jsonify({"notifications": [row.to_dict() for row in rows]}), 200
-
-    @app.post("/social/notifications/read-all")
-    def social_notifications_read_all():
-        user = _current_user()
-        rows = Notification.query.filter_by(username=user.username, is_read=False).all()
-        for row in rows:
-            row.is_read = True
-        db.session.commit()
-        emit_social_refresh(user.username)
-        return jsonify({"updated": len(rows)}), 200
-
-    @app.post("/social/presence/ping")
-    def social_presence_ping():
-        user = _current_user()
-        now = time.time()
-        SOCIAL_LAST_ACTIVE[user.username] = now
-        emit_social_refresh(user.username)
-        presence = get_social_presence_snapshot([user.username]).get(user.username, {"status": "online", "last_active": now})
-        return jsonify({"ok": True, "presence": presence}), 200
-
-    @app.post("/upload")
-    def upload():
-        user = _current_user()
-        if not user:
-            return jsonify({"error": "Unauthorized"}), 401
-
-        room_key = _extract_room_key()
-        if not room_key:
-            room_key = "dm"
-
-        if "file" not in request.files:
-            return jsonify({"error": "Missing file field 'file'"}), 400
-
-        f = request.files["file"]
-        if not f.filename:
-            return jsonify({"error": "Empty filename"}), 400
-
-        original_name = secure_filename(f.filename)
-        if not _allowed_file(original_name, f.mimetype):
-            return jsonify({"error": "File type not allowed"}), 400
-
-        ext = Path(original_name).suffix
-        unique_name = f"{uuid.uuid4().hex}{ext}"
-        save_path = UPLOAD_DIR / unique_name
-        f.save(save_path)
-
-        token = _make_file_token(unique_name)
-        return jsonify(
-            {
-                "file_url": f"/download/{token}",
-                "original_name": original_name,
-            }
-        )
-
-    @app.get("/youtube-search")
-    def youtube_search():
-        query = str(request.args.get("q") or "").strip()
-        if not query:
-            return jsonify({"items": []}), 200
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        try:
-            response = requests.get(
-                "https://www.youtube.com/results",
-                params={"search_query": query},
-                headers=headers,
-                timeout=10,
-            )
-            html = response.text
-        except Exception:
-            return jsonify({"items": []}), 200
-
-        def extract_initial_data(text):
-            patterns = [r"var ytInitialData\s*=\s*", r"window\[\"ytInitialData\"\]\s*=\s*"]
-            for pattern in patterns:
-                match = re.search(pattern, text)
-                if not match:
-                    continue
-                start = match.end()
-                brace_count = 0
-                in_string = False
-                escape = False
-                for idx, ch in enumerate(text[start:], start):
-                    if ch == "\\" and not escape:
-                        escape = True
-                        continue
-                    if ch == '"' and not escape:
-                        in_string = not in_string
-                    if in_string:
-                        escape = False
-                        continue
-                    if ch == "{":
-                        brace_count += 1
-                    elif ch == "}":
-                        brace_count -= 1
-                        if brace_count == 0:
-                            return text[start:idx + 1]
-                    escape = False
-            return None
-
-        json_text = extract_initial_data(html)
-        if not json_text:
-            return jsonify({"items": []}), 200
-
-        try:
-            data = json.loads(json_text)
-        except Exception:
-            return jsonify({"items": []}), 200
-
-        def collect_videos(node, found):
-            if isinstance(node, dict):
-                if "videoRenderer" in node:
-                    found.append(node["videoRenderer"])
-                for child in node.values():
-                    collect_videos(child, found)
-            elif isinstance(node, list):
-                for child in node:
-                    collect_videos(child, found)
-
-        renderers = []
-        collect_videos(data, renderers)
-
-        items = []
-        for renderer in renderers:
-            video_id = renderer.get("videoId")
-            if not video_id:
-                continue
-            title_runs = renderer.get("title", {}).get("runs", [])
-            title = "".join([run.get("text", "") for run in title_runs])
-            thumbnails = renderer.get("thumbnail", {}).get("thumbnails", [])
-            thumbnail = thumbnails[-1].get("url") if thumbnails else ""
-            channel_runs = renderer.get("ownerText", {}).get("runs", [])
-            channel = "".join([run.get("text", "") for run in channel_runs])
-            duration = renderer.get("lengthText", {}).get("simpleText", "")
-            items.append(
-                {
-                    "id": video_id,
-                    "title": title,
-                    "url": f"https://www.youtube.com/watch?v={video_id}",
-                    "thumbnail": thumbnail,
-                    "channel": channel,
-                    "duration": duration,
-                }
-            )
-            if len(items) >= 10:
-                break
-
-        seen = set()
-        unique_items = []
-        for item in items:
-            if item["id"] in seen:
-                continue
-            seen.add(item["id"])
-            unique_items.append(item)
-
-        return jsonify({"items": unique_items}), 200
-
-    @app.get("/download/<token>")
-    def download(token: str):
-        try:
-            filename = _verify_file_token(token)
-        except Exception:
-            return jsonify({"error": "Invalid or expired download token"}), 403
-
-        return send_from_directory(str(UPLOAD_DIR), filename, as_attachment=True)
-
-    @app.get("/<path:path>")
-    def frontend_assets(path: str):
-        asset_path = Path(app.static_folder) / path
-        if asset_path.exists() and asset_path.is_file():
-            mimetype = _asset_mimetype(path)
-            if mimetype:
-                return send_from_directory(app.static_folder, path, mimetype=mimetype)
-            return send_from_directory(app.static_folder, path)
-        return send_from_directory(app.static_folder, "index.html")
+            
+            logger.info(f"User {user.username} joined room: {room_key}")
+            return jsonify({"message": "Joined room", "room": room.to_dict()}), 200
+            
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500

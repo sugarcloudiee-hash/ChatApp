@@ -1633,6 +1633,13 @@ function setRoomKey(room) {
   return true;
 }
 
+function ensureAutoRoomKey() {
+  if (roomKey) return true;
+  if (!username) return false;
+  // Keyless flow: each user gets a private default room they can invite a partner into.
+  return setRoomKey(`room-${username}`);
+}
+
 async function fetchCurrentUser() {
   const res = await apiFetch("/me");
   if (!res.ok) {
@@ -2161,6 +2168,18 @@ function connectSocket() {
   });
 
   socket.on("receive_message", (message) => {
+    const clientMessageId = String(message?.client_message_id || "").trim();
+    if (clientMessageId && pendingMessageNodes.has(clientMessageId)) {
+      markOutgoingMessageDelivered(clientMessageId, message);
+      return;
+    }
+
+    const existing = getMessageNode(message?.id);
+    if (existing) {
+      updateMessage(message);
+      return;
+    }
+
     const dateSeparator = shouldShowDateSeparator(message.timestamp);
     if (dateSeparator) {
       const separator = document.createElement("div");
@@ -2464,8 +2483,14 @@ authTabSignup.addEventListener("click", () => {
 authSubmitBtn.addEventListener("click", async () => {
   try {
     await authenticate(currentAuthMode);
-    setOverlaySection("room");
-    updateRoomInfo();
+    if (!ensureAutoRoomKey()) {
+      throw new Error("Unable to initialize your room.");
+    }
+    roomIsPrivate = true;
+    roomInviteToken = "";
+    roomInviteLink = "";
+    showLogin(false);
+    connectSocket();
   } catch (err) {
     alert(err.message || "Authentication failed.");
   }
@@ -2982,13 +3007,16 @@ lastMessageDate = "";
   await restoreAuth();
 
   if (supabaseSession) {
-    if (roomKey) {
-      updateRoomInfo();
-      showLogin(false);
-      connectSocket();
+    if (!ensureAutoRoomKey()) {
+      showLogin(true);
+      setControlsEnabled(false);
       return;
     }
+    roomIsPrivate = true;
     updateRoomInfo();
+    showLogin(false);
+    connectSocket();
+    return;
   }
 
   showLogin(true);
